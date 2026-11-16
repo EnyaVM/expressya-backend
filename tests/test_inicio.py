@@ -16,4 +16,4 @@ def test_la_aplicacion_llega_a_la_base():
 def test_producto_inexistente_responde_404():
     respuesta = cliente.get(f"/v1/darkstores/{CERO}/productos/{CERO}/disponibilidad")
     assert respuesta.status_code == 404
-    assert respuesta.json()["detail"] == "NO_ENCONTRADO"
+    assert respuesta.json()["codigo"] == "NO_ENCONTRADO"
