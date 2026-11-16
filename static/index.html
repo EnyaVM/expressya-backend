@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>ExpressYa</title>
+</head>
+<body>
+  <h1>ExpressYa</h1>
+  <input id="tienda" placeholder="ID de la Dark Store" size="40">
+  <input id="producto" placeholder="ID del producto" size="40">
+  <button id="consultar">¿Hay?</button>
+  <p id="resultado"></p>
+  <script>
+    document.getElementById("consultar").addEventListener("click", async () => {
+      const tienda = document.getElementById("tienda").value;
+      const producto = document.getElementById("producto").value;
+      const respuesta = await fetch(`/v1/darkstores/${tienda}/productos/${producto}/disponibilidad`);
+      const datos = await respuesta.json();
+      document.getElementById("resultado").textContent = respuesta.ok ? datos.disponibilidad : "No existe ese producto en esa tienda";
+    });
+  </script>
+</body>
+</html>
