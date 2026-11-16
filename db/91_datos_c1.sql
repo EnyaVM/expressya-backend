@@ -7,10 +7,10 @@ VALUES ('11111111-1111-1111-1111-111111111112', 'Dark Store Sur', 'Sur'),
        ('11111111-1111-1111-1111-111111111114', 'Dark Store Oriente', 'Oriente'),
        ('11111111-1111-1111-1111-111111111115', 'Dark Store Poniente', 'Poniente');
 
-INSERT INTO producto (producto_id, nombre)
-VALUES ('55555555-5555-5555-5555-555555555551', 'Sudadera gris con capucha L'),
-       ('55555555-5555-5555-5555-555555555552', 'Calcetas deportivas 3 pares'),
-       ('55555555-5555-5555-5555-555555555553', 'Chamarra ligera negra M');
+INSERT INTO producto (producto_id, nombre, precio_unitario)
+VALUES ('55555555-5555-5555-5555-555555555551', 'Sudadera gris con capucha L', 449.00),
+       ('55555555-5555-5555-5555-555555555552', 'Calcetas deportivas 3 pares', 129.00),
+       ('55555555-5555-5555-5555-555555555553', 'Chamarra ligera negra M', 899.00);
 
 INSERT INTO asignacion_rol (usuario_id, darkstore_id, rol)
 SELECT '44444444-4444-4444-4444-444444444444', darkstore_id, 'PICKER'
