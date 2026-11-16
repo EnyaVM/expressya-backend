@@ -1,0 +1,73 @@
+Evidencia C1 - ExpressYa (Equipo 03)
+Fecha: 2026-11-16 03:30:02 -0600
+Python: Python 3.12.16
+
+== 1. CL-02: reserva con vencimiento a 300 s y carrera por la ultima unidad ==
+============================= test session starts ==============================
+platform darwin -- Python 3.12.16, pytest-8.1.1, pluggy-1.7.0 -- /Users/maxmolina/Documents/expressya-backend/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maxmolina/Documents/expressya-backend
+plugins: anyio-4.16.0
+collecting ... collected 12 items
+
+tests/test_checkout.py::test_hay_suficiente_y_devuelve_el_precio PASSED  [  8%]
+tests/test_checkout.py::test_pedir_mas_de_lo_disponible_da_sin_disponible PASSED [ 16%]
+tests/test_checkout.py::test_producto_agotado_da_sin_disponible PASSED   [ 25%]
+tests/test_checkout.py::test_producto_inexistente_da_no_encontrado PASSED [ 33%]
+tests/test_checkout.py::test_producto_repetido_da_solicitud_invalida PASSED [ 41%]
+tests/test_checkout.py::test_crear_checkout_reserva_y_descuenta_disponibilidad PASSED [ 50%]
+tests/test_checkout.py::test_la_reserva_vence_exactamente_a_los_300_segundos PASSED [ 58%]
+tests/test_checkout.py::test_la_reserva_deja_su_movimiento_auditable PASSED [ 66%]
+tests/test_checkout.py::test_la_ultima_unidad_la_gana_exactamente_un_cliente[2] PASSED [ 75%]
+tests/test_checkout.py::test_la_ultima_unidad_la_gana_exactamente_un_cliente[8] PASSED [ 83%]
+tests/test_checkout.py::test_post_checkouts_responde_201_y_luego_409_sin_disponible PASSED [ 91%]
+tests/test_checkout.py::test_un_cliente_con_checkout_activo_no_puede_abrir_otro PASSED [100%]
+
+============================== 12 passed in 0.34s ==============================
+
+== 2. CL-03, expiracion, comprobacion al usar y reconstruccion de saldos ==
+============================= test session starts ==============================
+platform darwin -- Python 3.12.16, pytest-8.1.1, pluggy-1.7.0 -- /Users/maxmolina/Documents/expressya-backend/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maxmolina/Documents/expressya-backend
+plugins: anyio-4.16.0
+collecting ... collected 12 items
+
+tests/test_reservas_cierre.py::test_liberar_devuelve_las_unidades_y_deja_su_movimiento PASSED [  8%]
+tests/test_reservas_cierre.py::test_liberar_dos_veces_da_estado_incompatible PASSED [ 16%]
+tests/test_reservas_cierre.py::test_no_se_puede_liberar_la_reserva_de_otro_cliente PASSED [ 25%]
+tests/test_reservas_cierre.py::test_la_unidad_liberada_la_puede_reservar_otro_cliente PASSED [ 33%]
+tests/test_reservas_cierre.py::test_una_reserva_vencida_expira_y_regresa_las_unidades PASSED [ 41%]
+tests/test_reservas_cierre.py::test_una_reserva_vigente_no_expira_antes_de_tiempo PASSED [ 50%]
+tests/test_reservas_cierre.py::test_el_proceso_de_expiracion_cierra_solo_las_vencidas PASSED [ 58%]
+tests/test_reservas_cierre.py::test_al_usar_una_reserva_se_comprueba_que_siga_vigente PASSED [ 66%]
+tests/test_reservas_cierre.py::test_un_cliente_con_reserva_vencida_puede_abrir_otro_checkout PASSED [ 75%]
+tests/test_reservas_cierre.py::test_liberar_y_expirar_a_la_vez_cierra_la_reserva_una_sola_vez PASSED [ 83%]
+tests/test_reservas_cierre.py::test_el_saldo_se_reconstruye_desde_los_movimientos PASSED [ 91%]
+tests/test_reservas_cierre.py::test_post_cierre_responde_200_y_luego_409 PASSED [100%]
+
+============================== 12 passed in 0.35s ==============================
+
+== 3. Las pruebas de carrera repetidas 20 veces ==
+corrida 1: 3 passed, 23 deselected in 0.24s
+corrida 2: 3 passed, 23 deselected in 0.24s
+corrida 3: 3 passed, 23 deselected in 0.25s
+corrida 4: 3 passed, 23 deselected in 0.24s
+corrida 5: 3 passed, 23 deselected in 0.25s
+corrida 6: 3 passed, 23 deselected in 0.25s
+corrida 7: 3 passed, 23 deselected in 0.25s
+corrida 8: 3 passed, 23 deselected in 0.25s
+corrida 9: 3 passed, 23 deselected in 0.24s
+corrida 10: 3 passed, 23 deselected in 0.24s
+corrida 11: 3 passed, 23 deselected in 0.30s
+corrida 12: 3 passed, 23 deselected in 0.24s
+corrida 13: 3 passed, 23 deselected in 0.24s
+corrida 14: 3 passed, 23 deselected in 0.25s
+corrida 15: 3 passed, 23 deselected in 0.25s
+corrida 16: 3 passed, 23 deselected in 0.24s
+corrida 17: 3 passed, 23 deselected in 0.25s
+corrida 18: 3 passed, 23 deselected in 0.24s
+corrida 19: 3 passed, 23 deselected in 0.24s
+corrida 20: 3 passed, 23 deselected in 0.24s
+
+RESULTADO FINAL: todo paso

@@ -122,13 +122,14 @@ def test_el_proceso_de_expiracion_cierra_solo_las_vencidas():
     _, vencida_2 = crear_reserva_vencida(nuevo_cliente(), darkstore_id, producto_id, 3)
     vigente = reservar(nuevo_cliente(), darkstore_id, producto_id, 1)
 
-    assert expirar_vencidas() >= 2
+    assert expirar_vencidas(limite=100000) >= 2
 
     assert estados(vencida_1)[0] == "EXPIRADA"
     assert estados(vencida_2)[0] == "EXPIRADA"
     assert estados(vigente)[0] == "ACTIVA"
     assert saldos(darkstore_id, producto_id) == (10, 1, 9)
-    assert expirar_vencidas() == 0
+
+    assert expirar_vencidas(limite=100000) == 0
 
 
 def test_al_usar_una_reserva_se_comprueba_que_siga_vigente():
@@ -196,7 +197,7 @@ def test_el_saldo_se_reconstruye_desde_los_movimientos():
     reservar(b, darkstore_id, producto_id, 1)
     crear_reserva_vencida(c, darkstore_id, producto_id, 3)
     liberar(a, reserva_a)
-    expirar_vencidas()
+    expirar_vencidas(limite=100000)
 
     e, r, d = saldos(darkstore_id, producto_id)
     e_movimientos, r_movimientos = reconstruir_saldos(darkstore_id, producto_id)
