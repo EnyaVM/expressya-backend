@@ -45,7 +45,7 @@ uvicorn app.main:app --reload
 - Documentación automática de la API (Swagger): http://localhost:8000/docs
 - Prueba de conexión con la base: http://localhost:8000/v1/salud
 
-En la página, escribe la tienda `11111111-1111-1111-1111-111111111111` y el producto `22222222-2222-2222-2222-222222222222` (Leche, 3 unidades: disponible) o `33333333-3333-3333-3333-333333333333` (Pan, 0 unidades: agotado).
+En la página, escribe la tienda `11111111-1111-1111-1111-111111111111` y el producto `22222222-2222-2222-2222-222222222222` (Playera básica negra M, 3 unidades: disponible) o `33333333-3333-3333-3333-333333333333` (Jeans slim azul 32, 0 unidades: agotado).
 
 ## 4. Correr las pruebas
 
