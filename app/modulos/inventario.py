@@ -1,8 +1,9 @@
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from app.db import pool
+from app.errores import ErrorDeNegocio
 
 router = APIRouter(prefix="/v1", tags=["M01 Inventario"])
 
@@ -15,5 +16,5 @@ def consultar_disponibilidad(darkstore_id: UUID, producto_id: UUID):
             (darkstore_id, producto_id),
         ).fetchone()
     if fila is None:
-        raise HTTPException(status_code=404, detail="NO_ENCONTRADO")
+        raise ErrorDeNegocio(404, "NO_ENCONTRADO", "El producto no existe en esta Dark Store")
     return {"disponibilidad": fila[0]}

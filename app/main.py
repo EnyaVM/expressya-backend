@@ -2,9 +2,11 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.db import pool
+from app.errores import ErrorDeNegocio, responder_error_de_negocio
 from app.modulos import inventario, pagos, pasarela_simulada, pedidos, reservas
 
 app = FastAPI(title="ExpressYa")
+app.add_exception_handler(ErrorDeNegocio, responder_error_de_negocio)
 app.include_router(inventario.router)
 app.include_router(reservas.router)
 app.include_router(pedidos.router)
