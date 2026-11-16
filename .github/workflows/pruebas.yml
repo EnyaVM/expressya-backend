@@ -1,0 +1,48 @@
+name: Pruebas
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: expressya
+          POSTGRES_PASSWORD: expressya
+          POSTGRES_DB: expressya
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U expressya -d expressya"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://expressya:expressya@localhost:5432/expressya
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Cargar la base (db/*.sql en orden)
+        run: |
+          for archivo in db/*.sql; do
+            echo "== $archivo"
+            docker exec -i ${{ job.services.postgres.id }} psql -U expressya -d expressya -v ON_ERROR_STOP=1 < "$archivo"
+          done
+
+      - name: Correr pruebas
+        run: python -m pytest -v

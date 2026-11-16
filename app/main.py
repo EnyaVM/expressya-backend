@@ -1,41 +1,22 @@
-from fastapi import FastAPI, HTTPException
-import psycopg
-from app.database import get_db_connection
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(
-    title="ExpressYa Backend - Núcleo C1",
-    version="1.1",
-    description="Sistema de comercio electrónico y gestión de inventario para 5 Dark Stores[cite: 1, 6]."
-)
+from app.db import pool
+from app.modulos import inventario, pagos, pasarela_simulada, pedidos, reservas
 
-@app.get("/")
-def read_root():
-    return {"status": "online", "proyecto": "ExpressYa - Desafío C1 Activo"}
+app = FastAPI(title="ExpressYa")
+app.include_router(inventario.router)
+app.include_router(reservas.router)
+app.include_router(pedidos.router)
+app.include_router(pagos.router)
+app.include_router(pasarela_simulada.router)
 
-@app.get("/v1/darkstores/{darkstore_id}/productos/{producto_id}/disponibilidad")
-def consultar_disponibilidad(darkstore_id: str, producto_id: str):
-    """
-    Consulta el saldo disponible (D = E - R - C) para un producto en una Dark Store específica.
-    """
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT e, r, c, (e - r - c) AS disponible, estado_producto
-                FROM expressya.inventario
-                WHERE darkstore_id = %s AND producto_id = %s;
-            """, (darkstore_id, producto_id))
-            row = cur.fetchone()
-            
-            if not row:
-                raise HTTPException(status_code=404, producto="Producto no encontrado en inventario")
-            
-            e, r, c, disponible, estado = row
-            return {
-                "darkstore_id": darkstore_id,
-                "producto_id": producto_id,
-                "existencia_fisica_e": e,
-                "reservado_r": r,
-                "comprometido_c": c,
-                "disponible_d": disponible,
-                "estado_producto": estado
-            }
+
+@app.get("/v1/salud")
+def salud():
+    with pool.connection() as conn:
+        hora = conn.execute("SELECT clock_timestamp()").fetchone()[0]
+    return {"estado": "ok", "hora_servidor": hora}
+
+
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
