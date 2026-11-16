@@ -4,9 +4,9 @@ SET LOCAL search_path TO expressya, public;
 INSERT INTO dark_store (darkstore_id, nombre, ubicacion)
 VALUES ('11111111-1111-1111-1111-111111111111', 'Dark Store Norte', 'Norte');
 
-INSERT INTO producto (producto_id, nombre)
-VALUES ('22222222-2222-2222-2222-222222222222', 'Playera básica negra M'),
-       ('33333333-3333-3333-3333-333333333333', 'Jeans slim azul 32');
+INSERT INTO producto (producto_id, nombre, precio_unitario)
+VALUES ('22222222-2222-2222-2222-222222222222', 'Playera básica negra M', 199.00),
+       ('33333333-3333-3333-3333-333333333333', 'Jeans slim azul 32', 599.00);
 
 INSERT INTO usuario_operativo (usuario_id, nombre)
 VALUES ('44444444-4444-4444-4444-444444444444', 'Picker de prueba');
