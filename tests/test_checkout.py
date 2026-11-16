@@ -130,6 +130,7 @@ def test_post_checkouts_responde_201_y_luego_409_sin_disponible():
     assert primera.json()["reserva"]["estado"] == "ACTIVA"
     assert segunda.status_code == 409
     assert segunda.json()["codigo"] == "SIN_DISPONIBLE"
+    assert segunda.json()["detalle"] == {"producto_id": str(producto_id)}
 
 
 def test_un_cliente_con_checkout_activo_no_puede_abrir_otro():

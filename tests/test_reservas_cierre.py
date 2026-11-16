@@ -206,7 +206,7 @@ def test_el_saldo_se_reconstruye_desde_los_movimientos():
     assert d == 5
 
 
-def test_post_cierre_responde_200_y_luego_409():
+def test_post_cierre_repetido_devuelve_200_y_otro_cierre_da_409():
     darkstore_id, producto_id = preparar_escenario(2)
     cliente = nuevo_cliente()
     reserva_id = reservar(cliente, darkstore_id, producto_id)
@@ -218,5 +218,16 @@ def test_post_cierre_responde_200_y_luego_409():
 
     assert primera.status_code == 200
     assert primera.json()["estado"] == "LIBERADA"
-    assert segunda.status_code == 409
-    assert segunda.json()["codigo"] == "ESTADO_INCOMPATIBLE"
+    assert segunda.status_code == 200
+    assert segunda.json() == primera.json()
+    assert segunda.headers["Resultado-Previo"] == "true"
+    with pool.connection() as conn:
+        claves = conn.execute(
+            "SELECT clave_operacion::text FROM movimiento_inventario "
+            "WHERE referencia_reserva_id = %s AND tipo = 'LIBERACION'", (reserva_id,)
+        ).fetchall()
+    assert claves == [(cabeceras["Clave-Operacion"],)]
+    distinta = {**cabeceras, "Clave-Operacion": str(uuid4())}
+    tercera = cliente_http.post(f"/v1/reservas/{reserva_id}/cierre", json=cuerpo, headers=distinta)
+    assert tercera.status_code == 409
+    assert tercera.json()["codigo"] == "ESTADO_INCOMPATIBLE"
