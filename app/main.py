@@ -12,6 +12,7 @@ from app.modulos import inventario, pagos, pasarela_simulada, pedidos, reservas
 SEGUNDOS_ENTRE_REVISIONES = 5
 
 registro = logging.getLogger("expressya.vencimiento")
+registro_pagos = logging.getLogger("expressya.pagos")
 
 
 async def revisar_reservas_vencidas():
@@ -25,11 +26,27 @@ async def revisar_reservas_vencidas():
         await asyncio.sleep(SEGUNDOS_ENTRE_REVISIONES)
 
 
+async def procesar_eventos_y_recuperacion():
+    while True:
+        try:
+            procesados = await asyncio.to_thread(pedidos.procesar_eventos_pendientes)
+            if procesados:
+                registro_pagos.info("Eventos EV-01 procesados: %s", procesados)
+            recuperados = await asyncio.to_thread(pagos.recuperar_intentos_iniciados)
+            if recuperados:
+                registro_pagos.info("Intentos INICIADO recuperados a EN_VERIFICACION: %s", recuperados)
+        except Exception:
+            registro_pagos.exception("Fallo el ciclo de eventos y recuperacion de pagos")
+        await asyncio.sleep(SEGUNDOS_ENTRE_REVISIONES)
+
+
 @asynccontextmanager
 async def ciclo_de_vida(app: FastAPI):
-    tarea = asyncio.create_task(revisar_reservas_vencidas())
+    tarea_vencimiento = asyncio.create_task(revisar_reservas_vencidas())
+    tarea_eventos = asyncio.create_task(procesar_eventos_y_recuperacion())
     yield
-    tarea.cancel()
+    tarea_vencimiento.cancel()
+    tarea_eventos.cancel()
 
 
 app = FastAPI(title="ExpressYa", lifespan=ciclo_de_vida)
