@@ -1,73 +1,135 @@
 Evidencia C1 - ExpressYa (Equipo 03)
-Fecha: 2026-11-16 03:30:02 -0600
-Python: Python 3.12.16
+Fecha: 2026-11-16 15:23:09 -0600
+Python 3.12.16
 
-== 1. CL-02: reserva con vencimiento a 300 s y carrera por la ultima unidad ==
+== Suite completa ==
 ============================= test session starts ==============================
 platform darwin -- Python 3.12.16, pytest-8.1.1, pluggy-1.7.0 -- /Users/maxmolina/Documents/expressya-backend/.venv/bin/python
 cachedir: .pytest_cache
 rootdir: /Users/maxmolina/Documents/expressya-backend
 plugins: anyio-4.16.0
-collecting ... collected 12 items
+collecting ... collected 44 items
 
-tests/test_checkout.py::test_hay_suficiente_y_devuelve_el_precio PASSED  [  8%]
-tests/test_checkout.py::test_pedir_mas_de_lo_disponible_da_sin_disponible PASSED [ 16%]
-tests/test_checkout.py::test_producto_agotado_da_sin_disponible PASSED   [ 25%]
-tests/test_checkout.py::test_producto_inexistente_da_no_encontrado PASSED [ 33%]
-tests/test_checkout.py::test_producto_repetido_da_solicitud_invalida PASSED [ 41%]
-tests/test_checkout.py::test_crear_checkout_reserva_y_descuenta_disponibilidad PASSED [ 50%]
-tests/test_checkout.py::test_la_reserva_vence_exactamente_a_los_300_segundos PASSED [ 58%]
-tests/test_checkout.py::test_la_reserva_deja_su_movimiento_auditable PASSED [ 66%]
-tests/test_checkout.py::test_la_ultima_unidad_la_gana_exactamente_un_cliente[2] PASSED [ 75%]
-tests/test_checkout.py::test_la_ultima_unidad_la_gana_exactamente_un_cliente[8] PASSED [ 83%]
-tests/test_checkout.py::test_post_checkouts_responde_201_y_luego_409_sin_disponible PASSED [ 91%]
-tests/test_checkout.py::test_un_cliente_con_checkout_activo_no_puede_abrir_otro PASSED [100%]
+tests/test_checkout.py::test_hay_suficiente_y_devuelve_el_precio PASSED  [  2%]
+tests/test_checkout.py::test_pedir_mas_de_lo_disponible_da_sin_disponible PASSED [  4%]
+tests/test_checkout.py::test_producto_agotado_da_sin_disponible PASSED   [  6%]
+tests/test_checkout.py::test_producto_inexistente_da_no_encontrado PASSED [  9%]
+tests/test_checkout.py::test_producto_repetido_da_solicitud_invalida PASSED [ 11%]
+tests/test_checkout.py::test_crear_checkout_reserva_y_descuenta_disponibilidad PASSED [ 13%]
+tests/test_checkout.py::test_la_reserva_vence_exactamente_a_los_300_segundos PASSED [ 15%]
+tests/test_checkout.py::test_la_reserva_deja_su_movimiento_auditable PASSED [ 18%]
+tests/test_checkout.py::test_la_ultima_unidad_la_gana_exactamente_un_cliente[2] PASSED [ 20%]
+tests/test_checkout.py::test_la_ultima_unidad_la_gana_exactamente_un_cliente[8] PASSED [ 22%]
+tests/test_checkout.py::test_post_checkouts_responde_201_y_luego_409_sin_disponible PASSED [ 25%]
+tests/test_checkout.py::test_un_cliente_con_checkout_activo_no_puede_abrir_otro PASSED [ 27%]
+tests/test_idempotencia_reservas.py::test_repetir_checkout_despues_de_liberar_conserva_la_respuesta_original PASSED [ 29%]
+tests/test_idempotencia_reservas.py::test_reusar_clave_para_otra_solicitud_da_conflicto[cantidad] PASSED [ 31%]
+tests/test_idempotencia_reservas.py::test_reusar_clave_para_otra_solicitud_da_conflicto[cliente] PASSED [ 34%]
+tests/test_idempotencia_reservas.py::test_reusar_clave_para_otra_solicitud_da_conflicto[operacion] PASSED [ 36%]
+tests/test_idempotencia_reservas.py::test_carrera_misma_clave_un_registro_y_un_solo_efecto[2-201-APLICADA] PASSED [ 38%]
+tests/test_idempotencia_reservas.py::test_carrera_misma_clave_un_registro_y_un_solo_efecto[1-409-RECHAZADA] PASSED [ 40%]
+tests/test_idempotencia_reservas.py::test_rechazo_revierte_la_expiracion_parcial_y_conserva_el_error PASSED [ 43%]
+tests/test_idempotencia_reservas.py::test_clave_anterior_con_movimiento_sin_respuesta_no_crea_otro_checkout PASSED [ 45%]
+tests/test_inicio.py::test_la_aplicacion_llega_a_la_base PASSED          [ 47%]
+tests/test_inicio.py::test_producto_inexistente_responde_404 PASSED      [ 50%]
+tests/test_reservas_cierre.py::test_liberar_devuelve_las_unidades_y_deja_su_movimiento PASSED [ 52%]
+tests/test_reservas_cierre.py::test_liberar_dos_veces_da_estado_incompatible PASSED [ 54%]
+tests/test_reservas_cierre.py::test_no_se_puede_liberar_la_reserva_de_otro_cliente PASSED [ 56%]
+tests/test_reservas_cierre.py::test_la_unidad_liberada_la_puede_reservar_otro_cliente PASSED [ 59%]
+tests/test_reservas_cierre.py::test_una_reserva_vencida_expira_y_regresa_las_unidades PASSED [ 61%]
+tests/test_reservas_cierre.py::test_una_reserva_vigente_no_expira_antes_de_tiempo PASSED [ 63%]
+tests/test_reservas_cierre.py::test_el_proceso_de_expiracion_cierra_solo_las_vencidas PASSED [ 65%]
+tests/test_reservas_cierre.py::test_al_usar_una_reserva_se_comprueba_que_siga_vigente PASSED [ 68%]
+tests/test_reservas_cierre.py::test_un_cliente_con_reserva_vencida_puede_abrir_otro_checkout PASSED [ 70%]
+tests/test_reservas_cierre.py::test_liberar_y_expirar_a_la_vez_cierra_la_reserva_una_sola_vez PASSED [ 72%]
+tests/test_reservas_cierre.py::test_el_saldo_se_reconstruye_desde_los_movimientos PASSED [ 75%]
+tests/test_reservas_cierre.py::test_post_cierre_repetido_devuelve_200_y_otro_cierre_da_409 PASSED [ 77%]
+tests/test_validacion_reservas.py::test_solicitud_invalida_en_reservas_devuelve_el_error_del_contrato[cantidad] PASSED [ 79%]
+tests/test_validacion_reservas.py::test_solicitud_invalida_en_reservas_devuelve_el_error_del_contrato[motivo] PASSED [ 81%]
+tests/test_validacion_reservas.py::test_solicitud_invalida_en_reservas_devuelve_el_error_del_contrato[sin_clave] PASSED [ 84%]
+tests/test_validacion_reservas.py::test_solicitud_invalida_en_reservas_devuelve_el_error_del_contrato[clave_invalida] PASSED [ 86%]
+tests/test_validacion_reservas.py::test_solicitud_invalida_en_reservas_devuelve_el_error_del_contrato[clave_no_v4] PASSED [ 88%]
+tests/test_validacion_reservas.py::test_solicitud_invalida_en_reservas_devuelve_el_error_del_contrato[reserva_id] PASSED [ 90%]
+tests/test_validacion_reservas.py::test_identificacion_temporal_invalida_da_401[None-/v1/checkouts] PASSED [ 93%]
+tests/test_validacion_reservas.py::test_identificacion_temporal_invalida_da_401[None-/v1/reservas/1e6760ec-6991-4001-8121-464fa0ccbcb9/cierre] PASSED [ 95%]
+tests/test_validacion_reservas.py::test_identificacion_temporal_invalida_da_401[incorrecto-/v1/checkouts] PASSED [ 97%]
+tests/test_validacion_reservas.py::test_identificacion_temporal_invalida_da_401[incorrecto-/v1/reservas/1e6760ec-6991-4001-8121-464fa0ccbcb9/cierre] PASSED [100%]
 
-============================== 12 passed in 0.34s ==============================
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/starlette/testclient.py:41
+  /Users/maxmolina/Documents/expressya-backend/.venv/lib/python3.12/site-packages/starlette/testclient.py:41: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    [], typing.ContextManager[anyio.abc.BlockingPortal]
 
-== 2. CL-03, expiracion, comprobacion al usar y reconstruccion de saldos ==
-============================= test session starts ==============================
-platform darwin -- Python 3.12.16, pytest-8.1.1, pluggy-1.7.0 -- /Users/maxmolina/Documents/expressya-backend/.venv/bin/python
-cachedir: .pytest_cache
-rootdir: /Users/maxmolina/Documents/expressya-backend
-plugins: anyio-4.16.0
-collecting ... collected 12 items
+.venv/lib/python3.12/site-packages/httpx/_client.py:680
+.venv/lib/python3.12/site-packages/httpx/_client.py:680
+.venv/lib/python3.12/site-packages/httpx/_client.py:680
+.venv/lib/python3.12/site-packages/httpx/_client.py:680
+.venv/lib/python3.12/site-packages/httpx/_client.py:680
+  /Users/maxmolina/Documents/expressya-backend/.venv/lib/python3.12/site-packages/httpx/_client.py:680: DeprecationWarning: The 'app' shortcut is now deprecated. Use the explicit style 'transport=WSGITransport(app=...)' instead.
+    warnings.warn(message, DeprecationWarning)
 
-tests/test_reservas_cierre.py::test_liberar_devuelve_las_unidades_y_deja_su_movimiento PASSED [  8%]
-tests/test_reservas_cierre.py::test_liberar_dos_veces_da_estado_incompatible PASSED [ 16%]
-tests/test_reservas_cierre.py::test_no_se_puede_liberar_la_reserva_de_otro_cliente PASSED [ 25%]
-tests/test_reservas_cierre.py::test_la_unidad_liberada_la_puede_reservar_otro_cliente PASSED [ 33%]
-tests/test_reservas_cierre.py::test_una_reserva_vencida_expira_y_regresa_las_unidades PASSED [ 41%]
-tests/test_reservas_cierre.py::test_una_reserva_vigente_no_expira_antes_de_tiempo PASSED [ 50%]
-tests/test_reservas_cierre.py::test_el_proceso_de_expiracion_cierra_solo_las_vencidas PASSED [ 58%]
-tests/test_reservas_cierre.py::test_al_usar_una_reserva_se_comprueba_que_siga_vigente PASSED [ 66%]
-tests/test_reservas_cierre.py::test_un_cliente_con_reserva_vencida_puede_abrir_otro_checkout PASSED [ 75%]
-tests/test_reservas_cierre.py::test_liberar_y_expirar_a_la_vez_cierra_la_reserva_una_sola_vez PASSED [ 83%]
-tests/test_reservas_cierre.py::test_el_saldo_se_reconstruye_desde_los_movimientos PASSED [ 91%]
-tests/test_reservas_cierre.py::test_post_cierre_responde_200_y_luego_409 PASSED [100%]
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 44 passed, 6 warnings in 0.51s ========================
 
-============================== 12 passed in 0.35s ==============================
-
-== 3. Las pruebas de carrera repetidas 20 veces ==
-corrida 1: 3 passed, 23 deselected in 0.24s
-corrida 2: 3 passed, 23 deselected in 0.24s
-corrida 3: 3 passed, 23 deselected in 0.25s
-corrida 4: 3 passed, 23 deselected in 0.24s
-corrida 5: 3 passed, 23 deselected in 0.25s
-corrida 6: 3 passed, 23 deselected in 0.25s
-corrida 7: 3 passed, 23 deselected in 0.25s
-corrida 8: 3 passed, 23 deselected in 0.25s
-corrida 9: 3 passed, 23 deselected in 0.24s
-corrida 10: 3 passed, 23 deselected in 0.24s
-corrida 11: 3 passed, 23 deselected in 0.30s
-corrida 12: 3 passed, 23 deselected in 0.24s
-corrida 13: 3 passed, 23 deselected in 0.24s
-corrida 14: 3 passed, 23 deselected in 0.25s
-corrida 15: 3 passed, 23 deselected in 0.25s
-corrida 16: 3 passed, 23 deselected in 0.24s
-corrida 17: 3 passed, 23 deselected in 0.25s
-corrida 18: 3 passed, 23 deselected in 0.24s
-corrida 19: 3 passed, 23 deselected in 0.24s
-corrida 20: 3 passed, 23 deselected in 0.24s
-
+== Pruebas de concurrencia ==
+Corrida 1 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.28s
+Corrida 2 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.27s
+Corrida 3 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.27s
+Corrida 4 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.27s
+Corrida 5 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.28s
+Corrida 6 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.27s
+Corrida 7 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.28s
+Corrida 8 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.27s
+Corrida 9 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.28s
+Corrida 10 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.28s
+Corrida 11 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.28s
+Corrida 12 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.27s
+Corrida 13 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.28s
+Corrida 14 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.29s
+Corrida 15 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.28s
+Corrida 16 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.28s
+Corrida 17 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.27s
+Corrida 18 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.28s
+Corrida 19 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.27s
+Corrida 20 de 20
+.....                                                                    [100%]
+5 passed, 39 deselected, 6 warnings in 0.28s
 RESULTADO FINAL: todo paso

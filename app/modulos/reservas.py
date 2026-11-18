@@ -1,13 +1,18 @@
+import hashlib
+import json
+from collections.abc import Callable
 from typing import Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Depends, Header
+from fastapi.responses import JSONResponse
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from app.db import pool
-from app.errores import ErrorDeNegocio
+from app.errores import ErrorDeNegocio, RutaReserva
 
-router = APIRouter(prefix="/v1", tags=["M02 Reservas"])
+router = APIRouter(prefix="/v1", tags=["M02 Reservas"], route_class=RutaReserva)
 
 
 class LineaSolicitud(BaseModel):
@@ -53,14 +58,15 @@ def verificar_disponibilidad(conn, darkstore_id: UUID, lineas: list[LineaSolicit
         if d < pedidas[producto_id]:
             raise ErrorDeNegocio(
                 409, "SIN_DISPONIBLE", "No hay unidades suficientes",
-                {"producto_id": str(producto_id), "disponible": d},
+                {"producto_id": str(producto_id)},
             )
         precios[producto_id] = precio
     return precios
 
 
 def cerrar_si_sigue_activa(conn, reserva_id: UUID, estado: str, motivo_cierre: str, tipo_movimiento: str,
-                           motivo_movimiento: str, solo_si_vencida: bool = False) -> bool:
+                           motivo_movimiento: str, solo_si_vencida: bool = False,
+                           clave_operacion: UUID | None = None) -> bool:
     fila = conn.execute("SELECT pedido_id FROM reserva WHERE reserva_id = %s", (reserva_id,)).fetchone()
     if fila is None:
         return False
@@ -85,7 +91,7 @@ def cerrar_si_sigue_activa(conn, reserva_id: UUID, estado: str, motivo_cierre: s
         "WHERE reserva_id = %s AND fecha_retiro IS NULL ORDER BY producto_id",
         (reserva_id,),
     ).fetchall()
-    clave_operacion = uuid4()
+    clave_operacion = clave_operacion or uuid4()
     for producto_id, cantidad in lineas:
         movimiento_id = conn.execute(
             "INSERT INTO movimiento_inventario "
@@ -122,13 +128,14 @@ def leer_reserva(conn, reserva_id: UUID) -> dict:
     }
 
 
-def liberar_reserva(conn, cliente_id: UUID, reserva_id: UUID, motivo: str) -> dict:
+def liberar_reserva(conn, cliente_id: UUID, reserva_id: UUID, motivo: str, clave_operacion: UUID | None = None) -> dict:
     duenio = conn.execute("SELECT cliente_id FROM reserva WHERE reserva_id = %s", (reserva_id,)).fetchone()
     if duenio is None or duenio[0] != cliente_id:
         raise ErrorDeNegocio(404, "NO_ENCONTRADO", "La reserva no existe")
 
     liberada = cerrar_si_sigue_activa(
-        conn, reserva_id, "LIBERADA", motivo, "LIBERACION", "Liberacion de la reserva por el cliente"
+        conn, reserva_id, "LIBERADA", motivo, "LIBERACION", "Liberacion de la reserva por el cliente",
+        clave_operacion=clave_operacion,
     )
     if not liberada:
         raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE", "La reserva ya no esta ACTIVA")
@@ -244,22 +251,92 @@ def crear_checkout(conn, cliente_id: UUID, darkstore_id: UUID, lineas: list[Line
     }
 
 
+def _responder_operacion_reserva(conn, operacion: str, clave: UUID, cliente_id: UUID,
+                                reserva_id: UUID | None, solicitud: BaseModel, estado_http: int,
+                                ejecutar: Callable[[], dict]) -> JSONResponse:
+    peticion = {
+        "operacion": operacion, "cliente_id": str(cliente_id),
+        "reserva_id": str(reserva_id) if reserva_id else None, "cuerpo": solicitud.model_dump(mode="json"),
+    }
+    canonica = json.dumps(peticion, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    huella = hashlib.sha256(canonica.encode("utf-8")).digest()
+    conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 0))", (clave,))
+    previo = conn.execute(
+        "SELECT huella_solicitud, respuesta FROM registro_operacion WHERE clave_operacion = %s", (clave,)
+    ).fetchone()
+    if previo:
+        if previo[0] != huella:
+            raise ErrorDeNegocio(409, "CONFLICTO_DE_CLAVE", "La clave pertenece a otra solicitud")
+        return JSONResponse(previo[1]["cuerpo"], status_code=previo[1]["estado_http"],
+                            headers={"Resultado-Previo": "true"})
+
+    # En C1 anterior solo se conservaba la clave en los movimientos de inventario.
+    usada = conn.execute(
+        "SELECT 1 FROM movimiento_inventario WHERE clave_operacion = %s LIMIT 1", (clave,)
+    ).fetchone()
+    if usada:
+        raise ErrorDeNegocio(409, "CONFLICTO_DE_CLAVE", "La clave ya tiene movimientos sin respuesta conservada")
+
+    motivo_rechazo = None
+    anterior = {}
+    resultante = {}
+    objeto = "reserva" if reserva_id else "cliente"
+    objeto_id = reserva_id or cliente_id
+    try:
+        with conn.transaction():
+            cuerpo = ejecutar()
+    except ErrorDeNegocio as error:
+        if error.estado_http == 401:
+            raise
+        estado_http = error.estado_http
+        cuerpo = error.cuerpo()
+        motivo_rechazo = error.codigo
+    else:
+        reserva = cuerpo["reserva"] if operacion == "CL-02" else cuerpo
+        objeto, objeto_id = "reserva", reserva["reserva_id"]
+        anterior = {"estado": "ACTIVA"} if operacion == "CL-03" else {}
+        resultante = {"estado": reserva["estado"]}
+
+    conn.execute(
+        "INSERT INTO registro_operacion "
+        "(clave_operacion, operacion, objeto, objeto_id, huella_solicitud, estado_anterior, "
+        "estado_resultante, actor_tipo, resultado, respuesta, motivo_rechazo) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, 'CLIENTE', %s, %s, %s)",
+        (clave, operacion, objeto, objeto_id, huella, Jsonb(anterior), Jsonb(resultante),
+         "RECHAZADA" if motivo_rechazo else "APLICADA",
+         Jsonb({"estado_http": estado_http, "cuerpo": cuerpo}), motivo_rechazo),
+    )
+    return JSONResponse(cuerpo, status_code=estado_http)
+
+
+def leer_clave_operacion(clave: UUID = Header(alias="Clave-Operacion")) -> UUID:
+    if clave.version != 4:
+        raise ErrorDeNegocio(400, "SOLICITUD_INVALIDA", "Clave-Operacion debe ser UUID v4")
+    return clave
+
+
 @router.post("/checkouts", status_code=201)
 def crear_checkout_http(
     solicitud: CheckoutSolicitud,
-    clave_operacion: UUID = Header(alias="Clave-Operacion"),
+    clave_operacion: UUID = Depends(leer_clave_operacion),
     cliente_id: UUID = Header(alias="Cliente-Id"),
 ):
     with pool.connection() as conn:
-        return crear_checkout(conn, cliente_id, solicitud.darkstore_id, solicitud.lineas, clave_operacion)
+        return _responder_operacion_reserva(
+            conn, "CL-02", clave_operacion, cliente_id, None, solicitud, 201,
+            lambda: crear_checkout(conn, cliente_id, solicitud.darkstore_id, solicitud.lineas, clave_operacion),
+        )
 
 
 @router.post("/reservas/{reserva_id}/cierre")
 def cerrar_reserva_http(
     reserva_id: UUID,
     solicitud: CierreSolicitud,
-    clave_operacion: UUID = Header(alias="Clave-Operacion"),
+    clave_operacion: UUID = Depends(leer_clave_operacion),
     cliente_id: UUID = Header(alias="Cliente-Id"),
 ):
     with pool.connection() as conn:
-        return liberar_reserva(conn, cliente_id, reserva_id, solicitud.motivo)
+        return _responder_operacion_reserva(
+            conn, "CL-03", clave_operacion, cliente_id, reserva_id, solicitud, 200,
+            lambda: liberar_reserva(conn, cliente_id, reserva_id, solicitud.motivo, clave_operacion),
+        )
