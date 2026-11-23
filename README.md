@@ -23,6 +23,7 @@ docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP
 docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/02_precio_producto.sql
 docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/90_datos_prueba.sql
 docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/91_datos_c1.sql
+docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/92_datos_c2.sql
 ```
 
 Con eso quedan 5 Dark Stores, 5 productos de ropa con precio y 25 filas de inventario, cada una con su movimiento inicial.
@@ -57,7 +58,7 @@ uvicorn app.main:app --reload
 
 En la página, escribe la tienda `11111111-1111-1111-1111-111111111111` y el producto `22222222-2222-2222-2222-222222222222` (Playera básica negra M, 3 unidades: disponible) o `33333333-3333-3333-3333-333333333333` (Jeans slim azul 32, 0 unidades: agotado).
 
-Al arrancar, la aplicación inicia un proceso que cada 5 segundos expira las reservas cuyo plazo de 300 s ya se cumplió.
+Al arrancar, la aplicación inicia un proceso que cada 5 segundos expira las reservas cuyo plazo de 300 s ya se cumplió,procesan eventos internos EV-01 pendientes y recuperan intentos de pago huérfanos en estado INICIADO.
 
 ## 4. Correr las pruebas
 
@@ -101,41 +102,89 @@ Cómo está resuelto (diseño SDD v1.1):
 
 Pendiente de cuando haya autenticación: por ahora el cliente se identifica con la cabecera temporal `Cliente-Id` y la `Clave-Operacion` se guarda en el movimiento, pero todavía no se aplica la idempotencia completa de las operaciones.
 
+## 6. Evidencia del desafío C2
+  Con la base prendida y el entorno activado (Bloque B):
+
+  ```bash
+    python scripts/reconstruir_base.py
+    python -m pytest -q
+    python scripts/evidencia_c2.py
+  ```
+
+  El script reconstruye la base desde cero, ejecuta toda la suite (C1 y C2), repite 20 veces las pruebas de carrera y guarda el resultado en 'evidencia/c2_resultados.txt'.
+
+Qué demuestra cada prueba del desafío C2:
+
+| Requisito del desafío C2 | Prueba | Archivo |
+|---|---|---|
+| Pago aprobado a tiempo confirma pedido y compromete inventario | `test_pago_aprobado_a_tiempo_confirma_el_pedido`, `test_caso_a_compromete_la_reserva_y_deja_movimientos_compromiso` | `tests/test_c2_pagos.py`, `tests/test_c2_confirmacion.py` |
+| Pago rechazado deja reserva activa y permite reintentar | `test_pago_rechazado_deja_la_reserva_activa_y_permite_reintentar` | `tests/test_c2_pagos.py` |
+| Sin respuesta de la pasarela responde `202 EN_VERIFICACION` sin recobrar | `test_sin_respuesta_de_la_pasarela_responde_202_en_verificacion`, `test_con_intento_abierto_otro_pago_da_intento_abierto` | `tests/test_c2_pagos.py` |
+| Dos solicitudes de pago concurrentes: solo inicia una | `test_carrera_dos_pagos_a_la_vez_solo_uno_inicia` (2 y 8 hilos) | `tests/test_c2_pagos.py` |
+| Pago tardío reembolsado al 100 % sin revivir la reserva ni pasar a `RECHAZADO` | `test_caso_b_pago_tardio_reembolsa_el_100_por_ciento_sin_revivir_la_reserva`, `test_pago_tardio_con_la_reserva_ya_expirada_por_el_proceso` | `tests/test_c2_confirmacion.py` |
+| Carrera pago vs. vencimiento: un solo desenlace consistente | `test_carrera_pago_contra_vencimiento_gana_una_sola_sentencia` | `tests/test_c2_confirmacion.py` |
+| Cobro duplicado reembolsado sin comprometer stock dos veces | `test_cobro_duplicado_se_reembolsa_y_el_inventario_se_compromete_una_sola_vez` | `tests/test_c2_confirmacion.py` |
+| Callback duplicado y evento repetido sin efecto doble | `test_notificacion_repetida_no_cambia_nada`, `test_evento_repetido_no_duplica_el_efecto` | `tests/test_c2_pagos.py`, `tests/test_c2_confirmacion.py` |
+| Idempotencia con `Clave-Operacion` y `CONFLICTO_DE_CLAVE` | `test_misma_clave_devuelve_la_respuesta_guardada`, `test_misma_clave_con_otro_monto_da_conflicto_de_clave` | `tests/test_c2_pagos.py` |
+| Reembolso, cola de espera y tope máximo | `test_reembolso_confirmado_deja_el_intento_reembolsado_total`, `test_reembolso_sin_respuesta_queda_en_verificacion_sin_reenviar_y_el_segundo_espera`, `test_el_reembolso_nunca_supera_lo_cobrado` | `tests/test_c2_reembolsos.py` |
+| Revisión manual con evidencia (`CL-06`) y reintento (`CL-17`) | `test_cl06_resuelve_un_cobro_en_verificacion_con_evidencia`, `test_cl06_resuelve_un_reembolso_en_verificacion`, `test_cl06_sin_rol_responsable_da_403`, `test_cl17_solo_reintenta_desde_reembolso_fallido` | `tests/test_c2_reembolsos.py` |
+| Recuperación tras caída sin duplicar cobros ni efectos | `test_un_intento_iniciado_viejo_pasa_a_en_verificacion_sin_volver_a_cobrar`, `test_un_evento_sin_procesar_se_reprocesa_una_sola_vez`, `test_repetir_la_peticion_por_timeout_no_duplica_el_cobro` | `tests/test_c2_recuperacion.py` |
+
+Decisiones `PROPUESTA` del equipo (SDD v1.1):
+- **Monto del intento de pago (CL-04):** debe coincidir exactamente con el `total_vigente` del pedido; si difiere, responde `400 SOLICITUD_INVALIDA`.
+- **Clave idempotente en notificaciones de pasarela (CL-05):** se deriva de `(objeto, objeto_id, referencia_externa)` y se registra tanto en `notificacion_pasarela` como en `registro_operacion`.
+- **Reembolso por cobro duplicado (ADV-001):** si un segundo intento `APROBADO` llega cuando el pedido ya está `CONFIRMADO`, se dispara automáticamente un reembolso por el 100 % del intento duplicado (`COBRO_DUPLICADO`).
+- **Plazo de espera de pasarela:** 30 segundos para mover intentos `INICIADO` huérfanos a `EN_VERIFICACION` durante la recuperación tras caída.
+- **Autenticación temporal:** `Cliente-Id` y `Usuario-Id` se reciben como cabeceras temporales hasta integrar autenticación completa.
+
+Rutas de control del simulador de pasarela (rutas internas de prueba, fuera de `CL-xx`):
+- `GET /simulador/modo`: consulta el modo actual configurado (`cobro` y `reembolso`).
+- `POST /simulador/modo`: configura dinámicamente el comportamiento (`cobro`: `APROBAR` | `RECHAZAR` | `NO_RESPONDER`; `reembolso`: `CONFIRMAR` | `FALLAR` | `NO_RESPONDER`).
+
 ## Estructura
 
 ```
 app/
-  main.py              arranca FastAPI, junta los módulos y lanza la revisión de reservas vencidas
-  db.py                pool de conexiones a PostgreSQL (psycopg); lee DATABASE_URL de .env
-  errores.py           errores de negocio con el cuerpo {codigo, mensaje, detalle}
+  main.py                arranca FastAPI, junta los módulos y lanza los ciclos de vencimiento, eventos y recuperación
+  db.py                  pool de conexiones a PostgreSQL (psycopg); lee DATABASE_URL de .env
+  errores.py             errores de negocio con el cuerpo {codigo, mensaje, detalle}
+  idempotencia.py        manejo de Clave-Operacion, huella SHA-256 y tabla registro_operacion
   modulos/
-    inventario.py      M01 Inventario: CL-01 disponibilidad
-    reservas.py        M02 Reservas: CL-02, CL-03, expiración y comprobación de vigencia
-    pedidos.py         M03 Pedidos: CL-07
-    pagos.py           M04 Pagos y reembolsos: CL-04, CL-05, CL-06, CL-16
-    pasarela_simulada.py  simulador controlable de la pasarela
+    inventario.py        M01 Inventario: CL-01 disponibilidad
+    reservas.py          M02 Reservas: CL-02, CL-03, expiración y comprobación de vigencia
+    pedidos.py           M03 Pedidos: CL-07 (casos A y B) y consumidor de eventos EV-01
+    pagos.py             M04 Pagos y reembolsos: CL-04, CL-05, CL-06, CL-16, CL-17 y recuperación
+    pasarela_simulada.py simulador controlable de la pasarela
 static/
-  index.html           la página del cliente
+  index.html             la página del cliente
 tests/
-  escenarios.py        ayudantes: tiendas, productos y clientes nuevos, reservas vencidas, reconstrucción
-  test_inicio.py       pruebas de arranque y de CL-01
-  test_checkout.py     CL-02: disponibilidad, reserva, 300 s y carrera
-  test_reservas_cierre.py   CL-03, expiración, vigencia, carrera liberar/expirar y reconstrucción
+  escenarios.py          ayudantes: tiendas, productos y clientes nuevos, reservas vencidas, reconstrucción
+  test_inicio.py         pruebas de arranque y de CL-01
+  test_checkout.py       CL-02: disponibilidad, reserva, 300 s y carrera
+  test_reservas_cierre.py CL-03, expiración, vigencia, carrera liberar/expirar y reconstrucción
+  test_c2_pagos.py       CL-04, CL-05, idempotencia y carreras de cobro
+  test_c2_confirmacion.py CL-07 casos A y B, pago tardío, carrera con vencimiento y cobro duplicado
+  test_c2_reembolsos.py  CL-16, CL-06 con evidencia, roles RESPONSABLE y reintentos CL-17
+  test_c2_recuperacion.py recuperación tras caída de intentos INICIADO y eventos EV-01
 db/
-  01_modelo_fisico_expressya.sql   DDL del SDD v1.1 (no se edita)
-  02_precio_producto.sql           agrega el precio unitario al producto
-  90_datos_prueba.sql              datos semilla
-  91_datos_c1.sql                  5 tiendas, productos de ropa e inventario inicial
+  01_modelo_fisico_expressya.sql DDL del SDD v1.1 (no se edita)
+  02_precio_producto.sql         agrega el precio unitario al producto
+  90_datos_prueba.sql            datos semilla
+  91_datos_c1.sql                5 tiendas, productos de ropa e inventario inicial
+  92_datos_c2.sql                usuario operativo de prueba con rol RESPONSABLE
 evidencia/
-  c1_resultados.txt                log reproducible de las pruebas de C1
+  c1_resultados.txt              log reproducible de las pruebas de C1
+  c2_resultados.txt              log reproducible de las pruebas de C2
 .github/
-  workflows/pruebas.yml            corre las pruebas en cada pull request
-  pull_request_template.md         lo que pide cada pull request
-  ISSUE_TEMPLATE/                  formatos de tarea y de defecto
+  workflows/pruebas.yml          corre las pruebas en cada pull request
+  pull_request_template.md       lo que pide cada pull request
+  ISSUE_TEMPLATE/                formatos de tarea y de defecto
 scripts/
-  evidencia_c1.sh                  genera evidencia/c1_resultados.txt
-  preparar_github.sh               crea etiquetas, hitos e issues de C1 y C2 (solo el PM, una vez)
-CONTRIBUTING.md                    reglas del equipo para trabajar en GitHub
+  evidencia_c1.sh                genera evidencia/c1_resultados.txt
+  reconstruir_base.py            reconstruye el esquema expressya cargando todos los SQL en orden
+  evidencia_c2.py                corre todas las pruebas y 20 repeticiones de carrera; guarda evidencia/c2_resultados.txt
+  preparar_github.sh             crea etiquetas, hitos e issues de C1 y C2 (solo el PM, una vez)
+CONTRIBUTING.md                  reglas del equipo para trabajar en GitHub
 ```
 
 Si tu base está en otra dirección, copia `.env.example` a `.env` y cambia `DATABASE_URL` ahí (el archivo `.env` no se sube a GitHub). Sin `.env`, la aplicación usa la base del paso 1.

@@ -1,0 +1,91 @@
+Evidencia C2 - ExpressYa (Equipo 03)
+Fecha: 2026-11-16 19:49:54 -0600
+Python: 3.12.9
+
+== 1. Todas las pruebas (C1 y C2) ==
+============================= test session starts =============================
+platform win32 -- Python 3.12.9, pytest-8.1.1, pluggy-1.7.0 -- C:\Users\enyab\Desktop\expressya-backend\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\enyab\Desktop\expressya-backend
+plugins: anyio-4.16.0
+collecting ... collected 53 items
+
+tests/test_c2_confirmacion.py::test_caso_a_compromete_la_reserva_y_deja_movimientos_compromiso PASSED [  1%]
+tests/test_c2_confirmacion.py::test_caso_b_pago_tardio_reembolsa_el_100_por_ciento_sin_revivir_la_reserva PASSED [  3%]
+tests/test_c2_confirmacion.py::test_pago_tardio_con_la_reserva_ya_expirada_por_el_proceso PASSED [  5%]
+tests/test_c2_confirmacion.py::test_carrera_pago_contra_vencimiento_gana_una_sola_sentencia PASSED [  7%]
+tests/test_c2_confirmacion.py::test_cobro_duplicado_se_reembolsa_y_el_inventario_se_compromete_una_sola_vez PASSED [  9%]
+tests/test_c2_confirmacion.py::test_evento_repetido_no_duplica_el_efecto PASSED [ 11%]
+tests/test_c2_pagos.py::test_pago_aprobado_a_tiempo_confirma_el_pedido PASSED [ 13%]
+tests/test_c2_pagos.py::test_pago_rechazado_deja_la_reserva_activa_y_permite_reintentar PASSED [ 15%]
+tests/test_c2_pagos.py::test_sin_respuesta_de_la_pasarela_responde_202_en_verificacion PASSED [ 16%]
+tests/test_c2_pagos.py::test_con_intento_abierto_otro_pago_da_intento_abierto PASSED [ 18%]
+tests/test_c2_pagos.py::test_misma_clave_devuelve_la_respuesta_guardada PASSED [ 20%]
+tests/test_c2_pagos.py::test_misma_clave_con_otro_monto_da_conflicto_de_clave PASSED [ 22%]
+tests/test_c2_pagos.py::test_notificacion_repetida_no_cambia_nada PASSED [ 24%]
+tests/test_c2_pagos.py::test_reserva_vencida_no_permite_iniciar_pago PASSED [ 26%]
+tests/test_c2_pagos.py::test_carrera_dos_pagos_a_la_vez_solo_uno_inicia[2] PASSED [ 28%]
+tests/test_c2_pagos.py::test_carrera_dos_pagos_a_la_vez_solo_uno_inicia[8] PASSED [ 30%]
+tests/test_c2_recuperacion.py::test_un_intento_iniciado_viejo_pasa_a_en_verificacion_sin_volver_a_cobrar PASSED [ 32%]
+tests/test_c2_recuperacion.py::test_un_evento_sin_procesar_se_reprocesa_una_sola_vez PASSED [ 33%]
+tests/test_c2_recuperacion.py::test_repetir_la_peticion_por_timeout_no_duplica_el_cobro PASSED [ 35%]
+tests/test_c2_reembolsos.py::test_reembolso_confirmado_deja_el_intento_reembolsado_total PASSED [ 37%]
+tests/test_c2_reembolsos.py::test_reembolso_sin_respuesta_queda_en_verificacion_sin_reenviar_y_el_segundo_espera PASSED [ 39%]
+tests/test_c2_reembolsos.py::test_cl06_resuelve_un_cobro_en_verificacion_con_evidencia PASSED [ 41%]
+tests/test_c2_reembolsos.py::test_cl06_rechaza_si_no_esta_en_verificacion PASSED [ 43%]
+tests/test_c2_reembolsos.py::test_cl06_sin_rol_responsable_da_403 PASSED [ 45%]
+tests/test_c2_reembolsos.py::test_cl06_resuelve_un_reembolso_en_verificacion PASSED [ 47%]
+tests/test_c2_reembolsos.py::test_cl17_solo_reintenta_desde_reembolso_fallido PASSED [ 49%]
+tests/test_c2_reembolsos.py::test_el_reembolso_nunca_supera_lo_cobrado PASSED [ 50%]
+tests/test_checkout.py::test_hay_suficiente_y_devuelve_el_precio PASSED  [ 52%]
+tests/test_checkout.py::test_pedir_mas_de_lo_disponible_da_sin_disponible PASSED [ 54%]
+tests/test_checkout.py::test_producto_agotado_da_sin_disponible PASSED   [ 56%]
+tests/test_checkout.py::test_producto_inexistente_da_no_encontrado PASSED [ 58%]
+tests/test_checkout.py::test_producto_repetido_da_solicitud_invalida PASSED [ 60%]
+tests/test_checkout.py::test_crear_checkout_reserva_y_descuenta_disponibilidad PASSED [ 62%]
+tests/test_checkout.py::test_la_reserva_vence_exactamente_a_los_300_segundos PASSED [ 64%]
+tests/test_checkout.py::test_la_reserva_deja_su_movimiento_auditable PASSED [ 66%]
+tests/test_checkout.py::test_la_ultima_unidad_la_gana_exactamente_un_cliente[2] PASSED [ 67%]
+tests/test_checkout.py::test_la_ultima_unidad_la_gana_exactamente_un_cliente[8] PASSED [ 69%]
+tests/test_checkout.py::test_post_checkouts_responde_201_y_luego_409_sin_disponible PASSED [ 71%]
+tests/test_checkout.py::test_un_cliente_con_checkout_activo_no_puede_abrir_otro PASSED [ 73%]
+tests/test_inicio.py::test_la_aplicacion_llega_a_la_base PASSED          [ 75%]
+tests/test_inicio.py::test_producto_inexistente_responde_404 PASSED      [ 77%]
+tests/test_reservas_cierre.py::test_liberar_devuelve_las_unidades_y_deja_su_movimiento PASSED [ 79%]
+tests/test_reservas_cierre.py::test_liberar_dos_veces_da_estado_incompatible PASSED [ 81%]
+tests/test_reservas_cierre.py::test_no_se_puede_liberar_la_reserva_de_otro_cliente PASSED [ 83%]
+tests/test_reservas_cierre.py::test_la_unidad_liberada_la_puede_reservar_otro_cliente PASSED [ 84%]
+tests/test_reservas_cierre.py::test_una_reserva_vencida_expira_y_regresa_las_unidades PASSED [ 86%]
+tests/test_reservas_cierre.py::test_una_reserva_vigente_no_expira_antes_de_tiempo PASSED [ 88%]
+tests/test_reservas_cierre.py::test_el_proceso_de_expiracion_cierra_solo_las_vencidas PASSED [ 90%]
+tests/test_reservas_cierre.py::test_al_usar_una_reserva_se_comprueba_que_siga_vigente PASSED [ 92%]
+tests/test_reservas_cierre.py::test_un_cliente_con_reserva_vencida_puede_abrir_otro_checkout PASSED [ 94%]
+tests/test_reservas_cierre.py::test_liberar_y_expirar_a_la_vez_cierra_la_reserva_una_sola_vez PASSED [ 96%]
+tests/test_reservas_cierre.py::test_el_saldo_se_reconstruye_desde_los_movimientos PASSED [ 98%]
+tests/test_reservas_cierre.py::test_post_cierre_responde_200_y_luego_409 PASSED [100%]
+
+============================= 53 passed in 6.70s ==============================
+
+== 2. Pruebas de carrera repetidas 20 veces ==
+corrida 1: 6 passed, 47 deselected in 2.13s
+corrida 2: 6 passed, 47 deselected in 2.16s
+corrida 3: 6 passed, 47 deselected in 2.15s
+corrida 4: 6 passed, 47 deselected in 2.17s
+corrida 5: 6 passed, 47 deselected in 2.15s
+corrida 6: 6 passed, 47 deselected in 2.09s
+corrida 7: 6 passed, 47 deselected in 2.20s
+corrida 8: 6 passed, 47 deselected in 2.17s
+corrida 9: 6 passed, 47 deselected in 2.21s
+corrida 10: 6 passed, 47 deselected in 2.12s
+corrida 11: 6 passed, 47 deselected in 2.13s
+corrida 12: 6 passed, 47 deselected in 2.21s
+corrida 13: 6 passed, 47 deselected in 2.13s
+corrida 14: 6 passed, 47 deselected in 2.12s
+corrida 15: 6 passed, 47 deselected in 2.19s
+corrida 16: 6 passed, 47 deselected in 2.29s
+corrida 17: 6 passed, 47 deselected in 2.17s
+corrida 18: 6 passed, 47 deselected in 2.11s
+corrida 19: 6 passed, 47 deselected in 2.14s
+corrida 20: 6 passed, 47 deselected in 2.15s
+
+RESULTADO FINAL: todo paso
