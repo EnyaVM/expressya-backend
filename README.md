@@ -100,7 +100,17 @@ Cómo está resuelto (diseño SDD v1.1):
 - **Salida de ACTIVA (AT-2):** liberar y expirar hacen el mismo `UPDATE reserva … WHERE estado = 'ACTIVA'` bajo el bloqueo del pedido, y la expiración exige `clock_timestamp() >= t_vence`. Solo una operación gana; la otra obtiene 0 filas.
 - **Historial:** cada reserva, liberación y expiración inserta un movimiento (`RESERVA`, `LIBERACION`, `EXPIRACION`) con el detalle del saldo `R`. El saldo guardado de E y el de R se pueden reconstruir sumando `movimiento_saldo`.
 
-Pendiente de cuando haya autenticación: por ahora el cliente se identifica con la cabecera temporal `Cliente-Id` y la `Clave-Operacion` se guarda en el movimiento, pero todavía no se aplica la idempotencia completa de las operaciones.
+### Reintentos de checkout y cierre (CL-02 y CL-03)
+
+Envía el UUID del cliente en `Cliente-Id` y un UUID v4 nuevo en `Clave-Operacion` para cada operación nueva. Si se pierde la respuesta, repite la solicitud con el mismo cliente, ruta, cuerpo y clave. La API devuelve el código HTTP y el cuerpo originales con `Resultado-Previo: true`, incluso si la reserva ya se cerró. Un segundo cierre con otra clave devuelve `409 ESTADO_INCOMPATIBLE`. Reutilizar la clave para otro contenido, cliente u operación devuelve `409 CONFLICTO_DE_CLAVE`.
+
+PostgreSQL bloquea la clave y registra el resultado en `registro_operacion`. Si la operación produce un rechazo de negocio, un punto de restauración (savepoint) deshace sus efectos. La transacción exterior guarda el rechazo antes de liberar la clave. Dos solicitudes simultáneas recuperan así una única decisión. Si cambia el inventario y el cliente quiere volver a intentar la compra, debe iniciar una operación nueva.
+
+La reproducción exacta cubre las respuestas guardadas desde esta versión. Si una clave anterior ya aparece en el historial de movimientos pero no tiene una respuesta guardada, la API devuelve `409 CONFLICTO_DE_CLAVE`. Los cierres de la versión anterior generaban una clave interna, por lo que su respuesta original no se puede recuperar con la cabecera del cliente.
+
+Mientras se use la cabecera temporal, un `Cliente-Id` ausente o mal formado devuelve `401 NO_AUTENTICADO`. Los errores de formato del cuerpo, la ruta o la clave devuelven `400 SOLICITUD_INVALIDA`. El error `SIN_DISPONIBLE` identifica el producto afectado sin mostrar el saldo de la tienda.
+
+Las pruebas de estas reglas están en `tests/test_idempotencia_reservas.py`, `tests/test_validacion_reservas.py` y `tests/test_reservas_cierre.py`.
 
 ## 6. Evidencia del desafío C2
   Con la base prendida y el entorno activado (Bloque B):
