@@ -1,104 +1,72 @@
-
 from decimal import Decimal
 
+import pytest
 
-def test_flujo_completo_expressya(
-    escenario_expressya
-):
-    """
-    Prueba E2E de C4.
+from app.db import pool
+from app.modulos import pasarela_simulada
+from escenarios_c3 import (
+    aplicar_faltante,
+    cancelar,
+    crear_resolucion_faltante,
+    estado_intento,
+    estado_pedido,
+    lineas_de,
+    pedido_pagado,
+    reembolsos_de,
+    saldos_de,
+    tienda_con_productos,
+)
 
-    Comprueba el proceso completo de compra,
-    pago, faltante, cancelacion y reembolso.
-    """
 
-    sistema = escenario_expressya
+@pytest.fixture(autouse=True)
+def restaurar_pasarela():
+    pasarela_simulada.reiniciar_simulador()
+    yield
+    pasarela_simulada.reiniciar_simulador()
 
-    # 1. CHECKOUT
-    pedido = sistema.checkout(
-        cliente_id=101,
-        productos=[
-            {
-                "producto_id": 1,
-                "cantidad": 5,
-                "precio": Decimal("100.00")
-            }
-        ]
-    )
 
-    assert pedido["estado"] in (
-        "CREADO", "PENDIENTE_PAGO"
-    )
+def test_flujo_completo_checkout_pago_faltante_cancelacion_y_reembolso():
+    darkstore_id, productos = tienda_con_productos(2, unidades=5, precio="250.00")
+    pedido_id, cliente_id, intento_id = pedido_pagado(darkstore_id, [(productos[0], 2), (productos[1], 1)])
+    assert saldos_de(darkstore_id, productos[0]) == (5, 0, 2, 3)
 
-    pedido_id = pedido["pedido_id"]
+    linea_id = lineas_de(pedido_id)[productos[0]]["linea_id"]
+    aplicar_faltante(crear_resolucion_faltante(darkstore_id, productos[0], linea_id, canceladas=1), linea_id)
+    assert estado_pedido(pedido_id) == "CONFIRMADO"
+    assert estado_intento(intento_id) == "REEMBOLSADO_PARCIAL"
 
-    # 2. PAGO
-    pago = sistema.pagar(
-        pedido_id=pedido_id,
-        importe=Decimal("500.00")
-    )
+    respuesta = cancelar(pedido_id, cliente_id)
+    assert respuesta.status_code == 200, respuesta.text
+    assert respuesta.json()["monto_reembolso"] == "500.00"
 
-    assert pago["estado"] == "APROBADO"
+    assert estado_pedido(pedido_id) == "CANCELADO"
+    assert estado_intento(intento_id) == "REEMBOLSADO_TOTAL"
+    assert sum(r[1] for r in reembolsos_de(intento_id)) == Decimal("750.00")
+    for producto_id in productos:
+        e, r, c, d = saldos_de(darkstore_id, producto_id)
+        assert (r, c, d) == (0, 0, e)
 
-    # 3. PREPARACION
-    preparacion = sistema.iniciar_preparacion(
-        pedido_id=pedido_id
-    )
+    with pool.connection() as conn:
+        historial = conn.execute(
+            """
+            SELECT m.tipo, ms.saldo, ms.cantidad, m.usuario_id IS NOT NULL, m.motivo
+            FROM movimiento_inventario m
+            JOIN movimiento_saldo ms USING (movimiento_id)
+            JOIN linea_pedido lp ON lp.reserva_id = m.referencia_reserva_id AND lp.producto_id = m.producto_id
+            WHERE lp.linea_id = %s
+            ORDER BY m.fecha
+            """,
+            (linea_id,),
+        ).fetchall()
+        avisos = conn.execute(
+            "SELECT tipo FROM aviso WHERE pedido_id = %s ORDER BY fecha",
+            (pedido_id,),
+        ).fetchall()
 
-    assert preparacion["estado"] == "PREPARACION_INICIADA"
-
-    # 4. DETECTAR FALTANTE
-    faltante = sistema.registrar_faltante(
-        pedido_id=pedido_id,
-        producto_id=1,
-        cantidad=2
-    )
-
-    assert faltante["estado"] == "DISCREPANCIA_REGISTRADA"
-
-    # 5. CANCELACION
-    cancelacion = sistema.cancelar(
-        pedido_id=pedido_id,
-        producto_id=1,
-        cantidad=2,
-        motivo="FALTANTE",
-        clave_operacion="E2E-CANCEL-001"
-    )
-
-    assert cancelacion["cantidad_cancelada"] == 2
-
-    # 6. REEMBOLSO
-    reembolso = sistema.consultar_reembolsos(
-        pedido_id=pedido_id
-    )
-
-    assert Decimal(
-        str(reembolso["total"])
-    ) == Decimal("200.00")
-
-    # 7. AVISO AL CLIENTE
-    aviso = sistema.consultar_avisos(
-        pedido_id=pedido_id
-    )
-
-    assert aviso["existe"] is True
-
-    # 8. VALIDAR RESULTADO FINAL
-    resultado = sistema.consultar_pedido(
-        pedido_id=pedido_id
-    )
-
-    assert resultado["cantidad_surtida"] == 3
-    assert resultado["cantidad_cancelada"] == 2
-
-    assert Decimal(
-        str(resultado["total_reembolsado"])
-    ) == Decimal("200.00")
-
-    assert Decimal(
-        str(resultado["total_cobrado"])
-    ) == Decimal("500.00")
-
-    assert Decimal(
-        str(resultado["importe_final"])
-    ) == Decimal("300.00")
+    tipos = [fila[0] for fila in historial]
+    assert "COMPROMISO" in tipos
+    cancelaciones = [fila for fila in historial if fila[0] == "CANCELACION_LINEA"]
+    assert [(f[1], f[2]) for f in cancelaciones] == [("C", -1), ("C", -1)]
+    assert cancelaciones[0][3] is True
+    assert all(f[4] for f in cancelaciones)
+    assert [a[0] for a in avisos] == ["CANCELACION_PARCIAL", "PEDIDO_CANCELADO"]

@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.db import pool
 from app.errores import ErrorDeNegocio, responder_error_de_negocio
-from app.modulos import inventario, pagos, pasarela_simulada, pedidos, reservas
+from app.modulos import cancelaciones, inventario, pagos, pasarela_simulada, pedidos, reservas
 
 SEGUNDOS_ENTRE_REVISIONES = 5
 
@@ -56,6 +56,7 @@ app.include_router(reservas.router)
 app.include_router(pedidos.router)
 app.include_router(pagos.router)
 app.include_router(pasarela_simulada.router)
+app.include_router(cancelaciones.router)
 
 
 @app.get("/v1/salud")
@@ -66,7 +67,3 @@ def salud():
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
-
-from app.modulos import cancelaciones
-
-app.include_router(cancelaciones.router)
