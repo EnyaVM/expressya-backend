@@ -35,6 +35,9 @@ async def procesar_eventos_y_recuperacion():
             recuperados = await asyncio.to_thread(pagos.recuperar_intentos_iniciados)
             if recuperados:
                 registro_pagos.info("Intentos INICIADO recuperados a EN_VERIFICACION: %s", recuperados)
+            reenviados = await asyncio.to_thread(pagos.recuperar_reembolsos_sin_enviar)
+            if reenviados:
+                registro_pagos.info("Reembolsos sin enviar recuperados: %s", reenviados)
         except Exception:
             registro_pagos.exception("Fallo el ciclo de eventos y recuperacion de pagos")
         await asyncio.sleep(SEGUNDOS_ENTRE_REVISIONES)
