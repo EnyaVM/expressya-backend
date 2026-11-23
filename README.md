@@ -16,11 +16,12 @@ En la Terminal, dentro de esta carpeta:
 docker run --name expressya-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=expressya_db -p 5432:5432 -d postgres:16
 ```
 
-Espera unos segundos y carga los archivos de `db/` en orden (01, 02, 90, 91):
+Espera unos segundos y carga los archivos de `db/` en orden (01, 02, 03, 90, 91, 92):
 
 ```bash
 docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/01_modelo_fisico_expressya.sql
 docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/02_precio_producto.sql
+docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/03_clave_intento_pago.sql
 docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/90_datos_prueba.sql
 docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/91_datos_c1.sql
 docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/92_datos_c2.sql
@@ -216,8 +217,10 @@ app/
     inventario.py        M01 Inventario: CL-01 disponibilidad
     reservas.py          M02 Reservas: CL-02, CL-03, expiración y comprobación de vigencia
     pedidos.py           M03 Pedidos: CL-07 (casos A y B) y consumidor de eventos EV-01
-    pagos.py             M04 Pagos y reembolsos: CL-04, CL-05, CL-06, CL-16, CL-17 y recuperación
+    pagos.py             M04 Pagos y reembolsos: CL-04, CL-05, CL-06, CL-16, CL-17 y recuperación de cobros y reembolsos
     pasarela_simulada.py simulador controlable de la pasarela
+    cancelaciones.py     M03 Cancelaciones: CL-13 del cliente y cancelación por faltante tras CL-12
+    avisos.py            M06 Avisos: CL-18 con clave estable por origen
 static/
   index.html             la página del cliente
 tests/
@@ -229,9 +232,15 @@ tests/
   test_c2_confirmacion.py CL-07 casos A y B, pago tardío, carrera con vencimiento y cobro duplicado
   test_c2_reembolsos.py  CL-16, CL-06 con evidencia, roles RESPONSABLE y reintentos CL-17
   test_c2_recuperacion.py recuperación tras caída de intentos INICIADO y eventos EV-01
+  escenarios_c3.py       ayudantes de C3: tienda con varios productos, pedido pagado, resolución de faltante
+  test_cancelaciones.py  CL-13 del cliente y por faltante, reembolso total y parcial, PREPARACION_INICIADA
+  test_avisos.py         CL-18: un aviso por origen
+  test_e2e_c4.py         flujo completo: checkout, pago, faltante, cancelación, reembolso e historial
+  test_robustez.py       caídas, clave reutilizada, eventos que fallan, montos inválidos y recuperación
 db/
   01_modelo_fisico_expressya.sql DDL del SDD v1.1 (no se edita)
   02_precio_producto.sql         agrega el precio unitario al producto
+  03_clave_intento_pago.sql      guarda la Clave-Operacion en el intento antes de cobrar (PROPUESTA)
   90_datos_prueba.sql            datos semilla
   91_datos_c1.sql                5 tiendas, productos de ropa e inventario inicial
   92_datos_c2.sql                usuario operativo de prueba con rol RESPONSABLE

@@ -42,3 +42,11 @@ async def responder_error_de_negocio(peticion: Request, error: ErrorDeNegocio):
         status_code=error.estado_http,
         content=error.cuerpo(),
     )
+
+
+async def responder_validacion(peticion: Request, error: RequestValidationError):
+    campos = [".".join(map(str, fallo["loc"])) for fallo in error.errors()]
+    return JSONResponse(
+        status_code=400,
+        content=ErrorDeNegocio(400, "SOLICITUD_INVALIDA", "Revisa los campos de la solicitud", {"campos": campos}).cuerpo(),
+    )
