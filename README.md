@@ -143,13 +143,58 @@ Qué demuestra cada prueba del desafío C2:
 Decisiones `PROPUESTA` del equipo (SDD v1.1):
 - **Monto del intento de pago (CL-04):** debe coincidir exactamente con el `total_vigente` del pedido; si difiere, responde `400 SOLICITUD_INVALIDA`.
 - **Clave idempotente en notificaciones de pasarela (CL-05):** se deriva de `(objeto, objeto_id, referencia_externa)` y se registra tanto en `notificacion_pasarela` como en `registro_operacion`.
-- **Reembolso por cobro duplicado (ADV-001):** si un segundo intento `APROBADO` llega cuando el pedido ya está `CONFIRMADO`, se dispara automáticamente un reembolso por el 100 % del intento duplicado (`COBRO_DUPLICADO`).
+- **Reembolso por cobro duplicado (ADV-001):** si un segundo intento `APROBADO` llega cuando el pedido ya está `CONFIRMADO` o `CANCELADO`, se dispara automáticamente un reembolso por el 100 % del intento duplicado (`COBRO_DUPLICADO`).
 - **Plazo de espera de pasarela:** 30 segundos para mover intentos `INICIADO` huérfanos a `EN_VERIFICACION` durante la recuperación tras caída.
 - **Autenticación temporal:** `Cliente-Id` y `Usuario-Id` se reciben como cabeceras temporales hasta integrar autenticación completa.
 
 Rutas de control del simulador de pasarela (rutas internas de prueba, fuera de `CL-xx`):
 - `GET /simulador/modo`: consulta el modo actual configurado (`cobro` y `reembolso`).
 - `POST /simulador/modo`: configura dinámicamente el comportamiento (`cobro`: `APROBAR` | `RECHAZAR` | `NO_RESPONDER`; `reembolso`: `CONFIRMAR` | `FALLAR` | `NO_RESPONDER`).
+
+## 7. Protocolo de recuperación
+
+Regla general: **ante la duda, nunca se cobra ni se devuelve dos veces.** Lo que no se puede confirmar pasa a verificación y lo resuelve una persona con evidencia.
+
+### Lo que hace el servidor solo (cada 5 segundos, `app/main.py`)
+
+| # | Situación tras una caída o un fallo | Qué hace el servidor | Nunca hace | Prueba |
+|---|---|---|---|---|
+| 1 | Reserva `ACTIVA` que ya pasó sus 300 s | La pasa a `EXPIRADA` y libera R | Revivirla | `test_el_proceso_de_expiracion_cierra_solo_las_vencidas` |
+| 2 | Cobro `INICIADO` sin respuesta por 30 s o más | Lo pasa a `EN_VERIFICACION` | Volver a cobrar | `test_un_intento_iniciado_viejo_pasa_a_en_verificacion_sin_volver_a_cobrar` |
+| 3 | Evento `EV-01` sin procesar (pago aprobado sin confirmar) | Lo reprocesa una vez; si falla, sigue con los demás | Dejar que un evento trabe a los otros | `test_un_evento_que_falla_no_bloquea_a_los_demas` |
+| 4 | Evento que falla 5 veces | Deja de reintentarlo y genera el aviso `EVENTO_SIN_PROCESAR` al responsable | Reintentarlo sin fin | `test_un_evento_que_falla_no_bloquea_a_los_demas` |
+| 5 | Reembolso solicitado que nunca se envió (`fecha_envio` vacía) | Lo envía | Enviar uno que ya salió | `test_caida_antes_de_enviar_el_reembolso_se_recupera` |
+| 6 | Reembolso enviado sin respuesta por 30 s o más | Lo pasa a `REEMBOLSO_EN_VERIFICACION` | Reenviarlo | `test_reembolso_enviado_sin_respuesta_por_caida_pasa_a_verificacion_sin_reenviar` |
+
+### Lo que hace el cliente al reintentar
+
+- Si no recibió respuesta, repite **la misma operación con la misma `Clave-Operacion`**: recibe la respuesta original con `Resultado-Previo: true` y sin efecto doble (`registro_operacion`).
+- Para una operación nueva siempre genera una clave nueva. Si reutiliza una clave con otros datos, otro pedido u otro cliente, recibe `409 CONFLICTO_DE_CLAVE` y no se cobra nada (`test_misma_clave_en_dos_pedidos_simultaneos_cobra_una_sola_vez`, `test_otro_cliente_no_recibe_la_respuesta_guardada_de_un_pago`).
+- Si repite un pago mientras el primero sigue en curso, espera y recibe el mismo resultado con un solo cobro (`test_misma_clave_mismo_pedido_simultaneo_devuelve_el_mismo_resultado`).
+
+### Lo que hace el responsable (manual)
+
+1. Revisar los pendientes:
+
+   ```sql
+   SET search_path TO expressya;
+   SELECT intento_id, estado, fecha_inicio FROM intento_pago
+    WHERE estado IN ('EN_VERIFICACION', 'REEMBOLSO_EN_VERIFICACION', 'REEMBOLSO_FALLIDO');
+   SELECT evento_id, intento_id, intentos_procesamiento FROM evento_interno
+    WHERE NOT procesado AND intentos_procesamiento >= 5;
+   SELECT tipo, origen_tipo, origen_id, fecha FROM aviso
+    WHERE destinatario_tipo = 'RESPONSABLE' AND entregado_en IS NULL;
+   ```
+
+2. Cobro o reembolso en verificación: consultar a la pasarela y resolver con evidencia en `CL-06` (`POST /v1/intentos-pago/{id}/verificacion` o `POST /v1/reembolsos/{id}/verificacion`).
+3. Reembolso fallido confirmado: reintentar con `CL-17` (`POST /v1/reembolsos/{id}/reintentos`).
+4. Evento detenido tras 5 fallos: corregir la causa y volver a habilitarlo; el servidor lo retoma en el siguiente ciclo:
+
+   ```sql
+   UPDATE expressya.evento_interno SET intentos_procesamiento = 0 WHERE evento_id = '<evento_id>';
+   ```
+
+Los 30 s de espera, el tope de 5 intentos por evento y el cerrojo por `Clave-Operacion` en una conexión aparte son decisiones `PROPUESTA` del equipo, no requisitos del cliente.
 
 ## Estructura
 
