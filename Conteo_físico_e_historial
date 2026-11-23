@@ -1,0 +1,132 @@
+# Conteo físico e Historial.
+
+## 1. CL-09: registrar conteo físico
+
+**Dónde:** `app/modulos/inventario.py` (M01), router ya existente `M01 Inventario`.
+**Ruta propuesta:** `POST /v1/darkstores/{darkstore_id}/productos/{producto_id}/conteos`.
+
+**Cabeceras** (igual que CL-06 en `pagos.py`): `Usuario-Id` (UUID) y `Clave-Operacion` (UUID). Usen `validar_clave_operacion`, `calcular_huella` y `ejecutar_idempotente` de `app/idempotencia.py` con `operacion="CL-09"`. Para la reutilización de la respuesta guardada, la API ya devuelve `Resultado-Previo: true`.
+**Cuerpo:** `cantidad_contada` (entero ≥ 0) y `fecha_corte`.
+**Reintento ante interbloqueo:** `pagos.py` tiene `_ejecutar_con_reintento_concurrencia` (3 intentos ante `40P01` y `40001`); copien el patrón.
+
+**Una sola transacción, en este orden:**
+
+1. Bloquear la fila: `SELECT e, n, estado_producto FROM inventario WHERE darkstore_id = … AND producto_id = … FOR UPDATE`.
+2. Leer R y C de `v_saldos_inventario`.
+3. Insertar en `conteo_fisico` (`cantidad_contada`, `e_al_corte`, `fecha_corte`, `usuario_id`). El trigger `exigir_rol_en_tienda` rechaza a quien no tenga rol en esa tienda con `ForeignKeyViolation` (verificado); tradúzcanlo a `403 SIN_PERMISO`.
+4. Clasificar con c = lo contado:
+
+| Caso | Qué se hace |
+|---|---|
+| c = E | Solo queda el conteo. |
+| c < R + C (**faltante**) | Rama compartida con el Compañero 2 (AT-4): producto `BLOQUEADO`, líneas pagadas pendientes a `NO_SURTIBLE`, `discrepancia` tipo `FALTANTE`, movimiento `DISCREPANCIA` y EV-03. |
+| R + C ≤ c < E (**diferencia sin faltante**) | `discrepancia` tipo `DIFERENCIA_SIN_FALTANTE`; movimiento `DISCREPANCIA` con `movimiento_saldo` E = −(E − c) y N = +(E − c); `UPDATE inventario SET e = c, n = n + (E − c)`; el producto sigue `HABILITADO`; EV-03. |
+| c > E (**sobrante**) | Solo la `discrepancia` (mismo tipo `DIFERENCIA_SIN_FALTANTE`) y EV-03. **E no cambia** hasta CL-12. Sin movimiento, porque `movimiento_saldo.cantidad` no admite 0. |
+
+5. `INSERT INTO evento_interno (tipo, productor, discrepancia_id) VALUES ('EV-03', 'M01', …)`. La restricción de la tabla obliga a que exista la discrepancia, así que **CL-09 crea la fila de `discrepancia`** (origen `CONTEO`, `conteo_origen_id`).
+
+### Nombres del PDF contra la base física
+
+| En el PDF | En la base (`movimiento_inventario.tipo` + `motivo`) |
+|---|---|
+| «discrepancia_física» | `DISCREPANCIA`, motivo `discrepancia_fisica` |
+| «en_revisión» | `DISCREPANCIA`, motivo `en_revision` |
+| «ajuste_conteo» | `RESOLUCION`, motivo `ajuste_conteo` |
+
+La restricción `CHECK` solo admite los tipos del DDL: probé insertar `AJUSTE_CONTEO` y la base lo rechaza.
+
+**Repetición:** la misma `Clave-Operacion` con el mismo cuerpo devuelve el resultado guardado y no crea otra discrepancia. *(Suposición: «el mismo conteo» significa la misma clave; un conteo nuevo con otra clave es un conteo nuevo.)*
+
+## 2. CL-12: resolver discrepancia sin faltante o sobrante
+
+**Dónde:** archivo nuevo `app/modulos/faltantes.py` (M05) y una línea `app.include_router(faltantes.router)` en `app/main.py`.
+**Ruta propuesta:** `POST /v1/discrepancias/{discrepancia_id}/resolucion`.
+**Cuerpo:** `unidades_validadas` (entero ≥ 0) y `evidencia` (obligatoria; incluye el `conteo_id`).
+
+**Una sola transacción:**
+
+1. `SELECT … FROM discrepancia … FOR UPDATE`. Si el estado no es `EN_VALIDACION`, `409 ESTADO_INCOMPATIBLE`.
+2. Rol del usuario (ver acuerdo 5) **en esa Dark Store**. Sin rol, `403 SIN_PERMISO`. Sin evidencia, `400 SOLICITUD_INVALIDA`.
+3. Bloquear la fila de `inventario`. Orden de bloqueo en esta operación: Discrepancia → Inventario.
+4. Calcular las unidades en revisión desde el movimiento `DISCREPANCIA` de esa discrepancia (la suma de su saldo N); no hace falta guardarlas en otro lado.
+5. Diferencia sin faltante: `unidades_validadas` = unidades **confirmadas como inexistentes** (0 a las unidades en revisión). Salen de N; el resto vuelve de N a E. Un solo movimiento `RESOLUCION` con motivo `ajuste_conteo`, `usuario_id` y `autorizado_por` del supervisor, `referencia_discrepancia_id` y `referencia_conteo_id`. Sobrante: E sube en `unidades_validadas` (0 a la diferencia contada).
+6. `UPDATE discrepancia SET estado = 'RESUELTA'`.
+
+**No usar `resolucion_faltante` aquí:** el PDF la reserva a la rama con faltante (D-05). En esta rama el rastro es el movimiento con `autorizado_por` y la discrepancia. *(Suposición.)*
+
+**La rama de faltante (D-05)** la agrega el Compañero 2 sobre este esqueleto, bifurcando por `discrepancia.tipo`.
+
+## 3. Historial (decisión del equipo, no es un CL)
+
+El diseño no define un contrato de lectura para esto; declárenlo como decisión del equipo en la matriz de trazabilidad, el OpenAPI y la bitácora RDD-IA.
+
+- **Ruta:** `GET /v1/darkstores/{darkstore_id}/productos/{producto_id}/movimientos?desde=&hasta=&tipo=` en `inventario.py`.
+- **Consulta:** `movimiento_inventario m JOIN movimiento_saldo ms USING (movimiento_id)`, ordenada por `fecha`, `movimiento_id`.
+- **Devuelve:** tipo, saldo (E, N, R o C), cantidad con signo, fecha, motivo, `usuario_id`, `autorizado_por` y referencias.
+- **Quién lo ve:** solo quien tenga rol en esa tienda (HU-10, INV-06).
+- **Nota:** `movimiento_saldo` **sí existe** en el modelo físico (corrijo mi aviso anterior). La vista `v_reconstruccion_saldos` compara E y N guardados contra la suma del historial.
+
+## 4. Pruebas pytest
+
+**Archivos** (convención de CONTRIBUTING: `tests/test_cl02_checkout.py`): `tests/test_cl09_conteo.py`, `tests/test_cl12_resolucion.py` y `tests/test_historial_movimientos.py`.
+
+**Cómo armar el escenario** (patrón de `test_checkout.py` y `test_c2_reembolsos.py`):
+
+- `preparar_escenario(unidades)` de `tests/escenarios.py` crea tienda, producto, inventario y el rol `PICKER` del usuario `4444…`. **No crea supervisor**: agreguen en su archivo un usuario nuevo con `asignacion_rol` en esa tienda. Eviten editar `escenarios.py` (lo comparten los tres compañeros).
+- Para R = 3: `crear_checkout(conn, nuevo_cliente(), darkstore_id, [LineaSolicitud(producto_id=…, cantidad=3)], uuid4())`.
+- `saldos()` devuelve solo `(e, r, d)`; para N consulten `inventario` directamente.
+- Llamadas HTTP con `TestClient(app)` y las cabeceras `Usuario-Id` y `Clave-Operacion`.
+
+| # | Prueba | Resultado esperado |
+|---|---|---|
+| 1 | Conteo igual a E | Se registra; sin discrepancia ni cambio de saldos |
+| 2 | **10 contra 8** (IT-S2-11): E = 10, R = 3, c = 8 | `(E, R, D)` pasa de `(10, 3, 7)` a `(8, 3, 5)`; N = 2; producto `HABILITADO`; discrepancia `EN_VALIDACION`; EV-03 pendiente. **Verificado** |
+| 3 | Faltante (c < R + C) | `BLOQUEADO`, líneas `NO_SURTIBLE`, EV-03 (depende de la rama compartida con el Compañero 2) |
+| 4 | Sobrante (c > E) | E no cambia; discrepancia abierta; sin movimiento |
+| 5 | Misma clave dos veces | Respuesta guardada con `Resultado-Previo: true`; una sola discrepancia |
+| 6 | Usuario sin rol en la tienda | `403 SIN_PERMISO`; sin cambios. **Verificado** (el trigger lo rechaza) |
+| 7 | CL-12: 1 inexistente y 1 aparece en recuento | E = 9, N = 0, D = 6; discrepancia `RESUELTA`. **Verificado** |
+| 8 | CL-12: las 2 aparecen / las 2 son inexistentes | E = 10, N = 0 / E = 8, N = 0 |
+| 9 | Sin evidencia, sin rol, o resolver dos veces | `400 SOLICITUD_INVALIDA`, `403 SIN_PERMISO`, `409 ESTADO_INCOMPATIBLE` |
+| 10 | Historial y reconstrucción | `v_reconstruccion_saldos`: E y N guardados = suma del historial. **Verificado** (`9 = 9` y `0 = 0` tras la prueba 7); D ≥ 0 siempre |
+
+**Comandos** (de README y CONTRIBUTING):
+
+```bash
+python -m pytest tests/test_cl09_conteo.py -v      # solo lo suyo
+python -m pytest -q                                 # toda la suite antes del PR
+```
+
+## 5. Su parte de C4
+
+- **Matriz:** `docs/matriz_pruebas_c4.md` ya tiene C4-01 a C4-10, redactados en general. A esta parte le tocan C4-06 (registrar una discrepancia) y C4-08 (registrar dos veces lo mismo). Propongan 5 casos reales con IDs nuevos, por ejemplo las pruebas 2, 4, 5, 7 y 10. El Compañero 2 junta la matriz completa: coordinen los IDs.
+- **Defectos:** registren cada uno como issue con la plantilla «Defecto» (CONTRIBUTING, regla 8). Ya hay uno real y reproducible: la fixture faltante de `test_e2e_c4.py` (sección 0). Los demás deben salir de ejecutar sus pruebas.
+- **Demo en vivo:** el caso 10 contra 8 por Swagger (`http://localhost:8000/docs`) en **Dark Store Sur** (`11111111-1111-1111-1111-111111111112`) con la playera (`22222222-2222-2222-2222-222222222222`, E = 10 en los datos semilla). El `PICKER` ya tiene rol en todas las tiendas, pero el `RESPONSABLE` (`7777…`) solo lo tiene en Norte. Para resolver en Sur agreguen `db/93_datos_c3.sql` con su `asignacion_rol` (CONTRIBUTING, regla 5: archivo nuevo y aviso al PM). El workflow carga `db/*.sql` en orden y `scripts/reconstruir_base.py` también, pero la lista manual del README llega hasta `92`; actualícenla.
+  Pasos: crear una reserva de 3 por CL-02 → conteo de 8 (D baja de 7 a 5) → resolver como responsable con evidencia → consultar el historial.
+- **README:** agreguen una sección con el mismo formato de las de C1 y C2 (tabla requisito → prueba → archivo, y las decisiones marcadas como `PROPUESTA`).
+- **Decisión de IA aceptada:** tómenla de su bitácora RDD-IA; no la veo. En el PR, llenen «Uso de IA» (qué sugirió y qué aceptaron, cambiaron o rechazaron).
+
+## 6. Acuerdos antes de empezar
+
+1. **Dueño del esqueleto de CL-12:** este compañero crea `faltantes.py` con una función que bifurca por `discrepancia.tipo`; el Compañero 2 agrega la rama de faltante después.
+2. **Rama compartida de AT-4** (bloquear producto, líneas a `NO_SURTIBLE`, EV-03): la usan CL-09 y CL-10. Propuesta: la escribe el Compañero 2 (CL-10 es suyo) y CL-09 la llama.
+3. **Manejador de EV-03:** nadie lo tiene. Mientras no exista, los eventos de diferencia sin faltante o sobrante deben poder quedarse pendientes sin romper nada.
+4. **Valores de `discrepancia.tipo`** (texto libre en la base): `FALTANTE` y `DIFERENCIA_SIN_FALTANTE`, los dos que nombra el PDF. Fíjenlos igual en CL-09, CL-10 y CL-12.
+5. **Rol para CL-12:** el PDF dice «supervisor» (candidato sin validar) y la base de prueba solo tiene `PICKER` y `RESPONSABLE`. Propuesta: reutilizar `RESPONSABLE` y filtrar por tienda (el `_exigir_rol_responsable` de `pagos.py` no filtra por tienda).
+6. **Códigos de error:** el repositorio usa `SIN_PERMISO` (403) y `SOLICITUD_INVALIDA` (400); el PDF dice `NO_AUTORIZADO` y `DATOS_INVALIDOS`. Sigan el repositorio y anótenlo en el README.
+7. **`app/main.py`:** cada módulo nuevo agrega ahí su `include_router`. Si dos PR editan las mismas líneas habrá conflicto: entren en orden y quien llegue segundo hace `git merge main`.
+8. **E vigente o E al corte:** la guía usa la E vigente bajo bloqueo (la columna `e_al_corte` guarda ese valor). Anótenlo en el RDD-IA.
+
+## 7. Checklist del PR (plantilla del repositorio)
+
+- [ ] Una tarea = un issue = una rama (`<issue>-cl09-conteo-fisico`) = un pull request; `Closes #<n>` en la descripción.
+- [ ] Commits con el prefijo del contrato: `CL-09: …`, `CL-12: …`.
+- [ ] Contrato: CL-09 y CL-12. Escenario de aceptación y operación atómica indicados (ver el aviso del inicio).
+- [ ] Pruebas 1 a 10 escritas y `python -m pytest -q` en verde (la fixture faltante de `test_e2e_c4.py` ya corregida o acordada con el PM).
+- [ ] Si cambié la base: archivo nuevo `db/93_…sql`, sin tocar `01_modelo_fisico_expressya.sql`, y avisé al PM.
+- [ ] Escribí solo en tablas de mi módulo, o llamé a la función de su responsable.
+- [ ] Historial declarado como decisión del equipo (matriz, OpenAPI y RDD-IA).
+- [ ] README actualizado, casos de la matriz y defectos registrados.
+- [ ] Sección «Uso de IA» llena y aprobación de otra persona del equipo antes del merge.
+
+
