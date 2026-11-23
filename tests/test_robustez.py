@@ -254,3 +254,110 @@ def test_reembolso_enviado_sin_respuesta_por_caida_pasa_a_verificacion_sin_reenv
 
     assert estado_intento(intento_id) == "REEMBOLSO_EN_VERIFICACION"
     assert len(llamadas) == 1
+
+
+def _cobros_del_pedido(pedido_id):
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT intento_id, estado FROM intento_pago WHERE pedido_id = %s",
+            (pedido_id,),
+        ).fetchall()
+
+
+def test_caida_tras_el_cobro_conserva_la_clave_y_no_cobra_otra_vez(monkeypatch):
+    darkstore_id, productos = tienda_con_productos(2)
+    pedido_a, cliente_a, monto_a = _pedido_pendiente(darkstore_id, productos[0])
+    pedido_b, cliente_b, monto_b = _pedido_pendiente(darkstore_id, productos[1])
+    llamadas = []
+    original = pasarela_simulada.cobrar
+
+    def cobrar_y_caer(intento_id, monto):
+        llamadas.append(intento_id)
+        original(intento_id, monto)
+        raise RuntimeError("caida provocada despues de que la pasarela aprobo")
+
+    monkeypatch.setattr(pasarela_simulada, "cobrar", cobrar_y_caer)
+    clave = uuid4()
+    assert _pagar(pedido_a, cliente_a, monto_a, clave).status_code == 500
+    assert [e for _, e in _cobros_del_pedido(pedido_a)] == ["INICIADO"]
+
+    otro_pedido = _pagar(pedido_b, cliente_b, monto_b, clave)
+    assert otro_pedido.status_code == 409
+    assert otro_pedido.json()["codigo"] == "CONFLICTO_DE_CLAVE"
+
+    repeticion = _pagar(pedido_a, cliente_a, monto_a, clave)
+    assert repeticion.status_code == 202
+    assert repeticion.headers.get("Resultado-Previo") == "true"
+    assert repeticion.json()["estado"] == "EN_VERIFICACION"
+    assert repeticion.json()["intento_id"] == str(_cobros_del_pedido(pedido_a)[0][0])
+
+    assert _pagar(pedido_a, cliente_a, monto_a, clave).json() == repeticion.json()
+    assert len(llamadas) == 1
+    assert _cobros_del_pedido(pedido_b) == []
+
+
+def test_checkout_con_la_clave_de_un_pago_en_curso_da_conflicto(monkeypatch):
+    darkstore_id, productos = tienda_con_productos(2)
+    pedido_id, cliente_id, monto = _pedido_pendiente(darkstore_id, productos[0])
+    llamadas = _contar_cobros(monkeypatch)
+    clave = uuid4()
+
+    with ThreadPoolExecutor(max_workers=1) as hilo:
+        pago = hilo.submit(_pagar, pedido_id, cliente_id, monto, clave)
+        time.sleep(0.15)
+        checkout = cliente_sin_excepciones.post(
+            "/v1/checkouts",
+            headers={"Clave-Operacion": str(clave), "Cliente-Id": str(nuevo_cliente())},
+            json={"darkstore_id": str(darkstore_id), "lineas": [{"producto_id": str(productos[1]), "cantidad": 1}]},
+        )
+        respuesta_pago = pago.result()
+
+    assert checkout.status_code == 409
+    assert checkout.json()["codigo"] == "CONFLICTO_DE_CLAVE"
+    assert respuesta_pago.status_code == 201
+    assert len(llamadas) == 1
+
+
+def test_un_pago_con_la_clave_de_un_checkout_no_cobra():
+    darkstore_id, productos = tienda_con_productos(2)
+    pedido_id, cliente_id, monto = _pedido_pendiente(darkstore_id, productos[0])
+    clave = uuid4()
+    assert cliente_sin_excepciones.post(
+        "/v1/checkouts",
+        headers={"Clave-Operacion": str(clave), "Cliente-Id": str(nuevo_cliente())},
+        json={"darkstore_id": str(darkstore_id), "lineas": [{"producto_id": str(productos[1]), "cantidad": 1}]},
+    ).status_code == 201
+
+    respuesta = _pagar(pedido_id, cliente_id, monto, clave)
+
+    assert respuesta.status_code == 409
+    assert _cobros_del_pedido(pedido_id) == []
+
+
+def test_cancelar_con_la_clave_de_un_pago_da_conflicto():
+    darkstore_id, (producto_id,) = tienda_con_productos(1)
+    pedido_id, cliente_id, monto = _pedido_pendiente(darkstore_id, producto_id)
+    clave = uuid4()
+    assert _pagar(pedido_id, cliente_id, monto, clave).status_code == 201
+
+    respuesta = cancelar(pedido_id, cliente_id, clave)
+
+    assert respuesta.status_code == 409
+    assert respuesta.json()["codigo"] == "CONFLICTO_DE_CLAVE"
+    assert estado_pedido(pedido_id) == "CONFIRMADO"
+
+
+def test_evento_atascado_de_la_version_anterior_genera_aviso():
+    darkstore_id, (producto_id,) = tienda_con_productos(1)
+    pedido_id, _, monto = _pedido_pendiente(darkstore_id, producto_id)
+    _, evento_id = _intento_aprobado_con_evento(pedido_id, monto)
+    with pool.connection() as conn:
+        conn.execute("UPDATE evento_interno SET intentos_procesamiento = 50 WHERE evento_id = %s", (evento_id,))
+
+    pedidos.procesar_eventos_pendientes()
+    pedidos.procesar_eventos_pendientes()
+
+    with pool.connection() as conn:
+        avisos = conn.execute("SELECT tipo FROM aviso WHERE origen_id = %s", (evento_id,)).fetchall()
+    assert avisos == [("EVENTO_SIN_PROCESAR",)]
+    assert _evento(evento_id) == (False, 50)

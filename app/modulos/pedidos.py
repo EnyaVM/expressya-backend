@@ -284,12 +284,29 @@ def confirmar_compra(conn, intento_id: UUID) -> UUID | None:
         )
 
 
+def avisar_eventos_detenidos() -> int:
+    with pool.connection() as conn:
+        detenidos = conn.execute(
+            """
+            SELECT evento_id
+            FROM evento_interno
+            WHERE NOT procesado AND tipo = 'EV-01' AND intentos_procesamiento >= %s
+            """,
+            (MAXIMO_INTENTOS_EVENTO,),
+        ).fetchall()
+        for (evento_id,) in detenidos:
+            registrar_aviso(conn, "EVENTO_SIN_PROCESAR", "EVENTO_INTERNO", evento_id)
+    return len(detenidos)
+
+
 def procesar_eventos_pendientes(limite: int = 50) -> int:
     """
     Consumidor de eventos EV-01. Procesa hasta `limite` eventos en transacciones individuales
     con FOR UPDATE SKIP LOCKED. Envía los reembolsos pendientes fuera de la transacción.
     """
     from app.modulos.pagos import enviar_reembolso
+
+    avisar_eventos_detenidos()
 
     procesados = 0
     intentados: list[UUID] = []

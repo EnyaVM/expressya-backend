@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.db import pool
 from app.errores import ErrorDeNegocio, RutaReserva
+from app.idempotencia import clave_tomada_por_un_pago
 
 router = APIRouter(prefix="/v1", tags=["M02 Reservas"], route_class=RutaReserva)
 
@@ -276,6 +277,8 @@ def _responder_operacion_reserva(conn, operacion: str, clave: UUID, cliente_id: 
     ).fetchone()
     if usada:
         raise ErrorDeNegocio(409, "CONFLICTO_DE_CLAVE", "La clave ya tiene movimientos sin respuesta conservada")
+    if clave_tomada_por_un_pago(conn, clave):
+        raise ErrorDeNegocio(409, "CONFLICTO_DE_CLAVE", "La clave ya fue utilizada por un pago")
 
     motivo_rechazo = None
     anterior = {}

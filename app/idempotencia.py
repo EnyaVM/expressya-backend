@@ -27,6 +27,13 @@ def validar_clave_operacion(clave_str: str | None) -> UUID:
         ) from exc
 
 
+def clave_tomada_por_un_pago(conn, clave: UUID) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM intento_pago WHERE clave_operacion = %s",
+        (clave,),
+    ).fetchone() is not None
+
+
 def calcular_huella(operacion: str, objeto_id: Any, cuerpo: dict[str, Any]) -> bytes:
     """Genera el hash SHA-256 (32 bytes) del JSON canónico de la solicitud."""
     canonico = json.dumps(
@@ -149,6 +156,13 @@ def ejecutar_idempotente(
                             cuerpo_err.get("detalle"),
                         )
                     return respuesta_guardada, True
+
+                if operacion != "CL-04" and clave_tomada_por_un_pago(conn, clave):
+                    raise ErrorDeNegocio(
+                        409,
+                        "CONFLICTO_DE_CLAVE",
+                        "La Clave-Operacion ya fue utilizada por un pago.",
+                    )
 
                 resultado_trabajo = trabajo()
                 respuesta_final = {

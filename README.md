@@ -194,7 +194,15 @@ Regla general: **ante la duda, nunca se cobra ni se devuelve dos veces.** Lo que
    UPDATE expressya.evento_interno SET intentos_procesamiento = 0 WHERE evento_id = '<evento_id>';
    ```
 
-Los 30 s de espera, el tope de 5 intentos por evento y el cerrojo por `Clave-Operacion` en una conexión aparte son decisiones `PROPUESTA` del equipo, no requisitos del cliente.
+### Por qué una misma clave no produce dos cobros
+
+- `db/03_clave_intento_pago.sql` guarda la `Clave-Operacion` y la huella en `intento_pago` **antes** de llamar a la pasarela. Si el proceso se cae después del cobro y antes de guardar la respuesta, la clave sigue tomada: otro pedido con esa clave recibe `409 CONFLICTO_DE_CLAVE` y repetir el mismo pago devuelve `202 EN_VERIFICACION` con el mismo intento, sin cobrar otra vez (`test_caida_tras_el_cobro_conserva_la_clave_y_no_cobra_otra_vez`).
+- Checkout, cierre, cancelación y verificaciones revisan esa columna: una clave usada por un pago no se acepta en otra operación (`test_checkout_con_la_clave_de_un_pago_en_curso_da_conflicto`, `test_cancelar_con_la_clave_de_un_pago_da_conflicto`).
+- Mientras un pago está en curso, otra solicitud con la misma clave espera a que termine (cerrojo en una conexión aparte del pool).
+- Un evento que ya estaba detenido antes de esta versión también genera su aviso (`test_evento_atascado_de_la_version_anterior_genera_aviso`).
+- Lo que esto no cubre: una restauración de la base desde un respaldo anterior al cobro. Para ese caso aplica la regla del diseño (8.1): comparar referencias de la pasarela antes de cobrar o devolver otra vez.
+
+Los 30 s de espera, el tope de 5 intentos por evento, la clave guardada en `intento_pago` y el cerrojo por `Clave-Operacion` son decisiones `PROPUESTA` del equipo, no requisitos del cliente.
 
 ## Estructura
 
