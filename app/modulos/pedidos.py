@@ -1,12 +1,52 @@
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, Field
 
 from app.db import pool
+from app.errores import ErrorDeNegocio
+from app.idempotencia import (
+    calcular_huella,
+    ejecutar_idempotente,
+    validar_clave_operacion,
+)
 from app.modulos.reservas import cerrar_si_sigue_activa
 
-router = APIRouter(tags=["Pedidos (M03)"])
+
+class RutaPedidoValidada(APIRoute):
+    def get_route_handler(self):
+        atender = super().get_route_handler()
+
+        async def atender_validado(peticion: Request):
+            try:
+                return await atender(peticion)
+            except RequestValidationError as error:
+                campos = [
+                    ".".join(map(str, fallo["loc"]))
+                    for fallo in error.errors()
+                ]
+                raise ErrorDeNegocio(
+                    400,
+                    "SOLICITUD_INVALIDA",
+                    "Revisa los campos de la solicitud.",
+                    {"campos": campos},
+                ) from error
+
+        return atender_validado
+
+
+router = APIRouter(
+    tags=["Pedidos (M03)"],
+    route_class=RutaPedidoValidada,
+)
+
+
+
+class SepararCantidadSolicitud(BaseModel):
+    cantidad: int = Field(gt=0)
 
 
 def _disparar_reembolso_interno(
@@ -315,3 +355,223 @@ def procesar_eventos_pendientes(limite: int = 50) -> int:
             enviar_reembolso(reembolso_a_enviar)
 
     return procesados
+
+
+def separar_cantidad(conn, linea_id: UUID, cantidad: int,
+                     usuario_id: UUID, clave_operacion: UUID) -> dict:
+    """CL-08: separar unidades de una línea de pedido."""
+
+    with conn.cursor() as cur:
+        # Localizar la línea y su pedido.
+        cur.execute(
+            """
+            SELECT pedido_id, darkstore_id, producto_id, reserva_id
+            FROM linea_pedido WHERE linea_id = %s
+            """,
+            (linea_id,),
+        )
+        referencia = cur.fetchone()
+        if referencia is None:
+            raise ErrorDeNegocio(404, "NO_ENCONTRADO", "Línea inexistente.")
+
+        pedido_id, tienda_id, producto_id, reserva_id = referencia
+
+        # Bloquear primero el pedido.
+        cur.execute(
+            "SELECT estado FROM pedido WHERE pedido_id = %s FOR UPDATE",
+            (pedido_id,),
+        )
+        if cur.fetchone()[0] != "CONFIRMADO":
+            raise ErrorDeNegocio(
+                409, "ESTADO_INCOMPATIBLE", "Pedido no confirmado."
+            )
+
+        # Comprobar el permiso del picker en la tienda.
+        cur.execute(
+            """
+            SELECT 1 FROM asignacion_rol
+            WHERE usuario_id = %s AND darkstore_id = %s
+              AND rol = 'PICKER'
+            """,
+            (usuario_id, tienda_id),
+        )
+        if cur.fetchone() is None:
+            raise ErrorDeNegocio(
+                403, "SIN_PERMISO", "Usuario sin rol PICKER en la tienda."
+            )
+
+        # Bloquear y comprobar inventario.
+        cur.execute(
+            """
+            SELECT e, estado_producto FROM inventario
+            WHERE darkstore_id = %s AND producto_id = %s
+            FOR UPDATE
+            """,
+            (tienda_id, producto_id),
+        )
+        inventario = cur.fetchone()
+        if inventario is None or inventario[1] != "HABILITADO":
+            raise ErrorDeNegocio(
+                409, "PRODUCTO_BLOQUEADO", "Producto no habilitado."
+            )
+        if cantidad <= 0 or inventario[0] < cantidad:
+            raise ErrorDeNegocio(
+                409, "SIN_DISPONIBLE", "Cantidad no disponible."
+            )
+
+        # Bloquear y validar la línea.
+        cur.execute(
+            """
+            SELECT q, s, k, estado FROM linea_pedido
+            WHERE linea_id = %s FOR UPDATE
+            """,
+            (linea_id,),
+        )
+        q, s, k, estado = cur.fetchone()
+
+        if estado != "ASIGNADA" or s + k + cantidad > q:
+            raise ErrorDeNegocio(
+                409, "ESTADO_INCOMPATIBLE",
+                "La línea no admite esa cantidad."
+            )
+
+        nuevo_s = s + cantidad
+        nuevo_estado = (
+            "SEPARADA" if nuevo_s == q
+            else "PARCIAL" if nuevo_s + k == q
+            else "ASIGNADA"
+        )
+
+        # Actualizar la línea y las existencias físicas.
+        cur.execute(
+            """
+            UPDATE linea_pedido SET s = %s, estado = %s
+            WHERE linea_id = %s
+            """,
+            (nuevo_s, nuevo_estado, linea_id),
+        )
+        cur.execute(
+            """
+            UPDATE inventario SET e = e - %s
+            WHERE darkstore_id = %s AND producto_id = %s
+            """,
+            (cantidad, tienda_id, producto_id),
+        )
+
+        # Registrar el movimiento auditable.
+        cur.execute(
+            """
+            INSERT INTO movimiento_inventario
+            (darkstore_id, producto_id, tipo, motivo,
+             usuario_id, clave_operacion,
+             referencia_reserva_id, referencia_linea_id)
+            VALUES (%s, %s, 'SEPARACION', 'Separación CL-08',
+                    %s, %s, %s, %s)
+            RETURNING movimiento_id
+            """,
+            (tienda_id, producto_id, usuario_id,
+             clave_operacion, reserva_id, linea_id),
+        )
+        movimiento_id = cur.fetchone()[0]
+
+        cur.execute(
+            """
+            INSERT INTO movimiento_saldo
+            (movimiento_id, saldo, cantidad)
+            VALUES (%s, 'E', %s), (%s, 'C', %s)
+            """,
+            (movimiento_id, -cantidad, movimiento_id, -cantidad),
+        )
+
+        return {
+            "linea_id": str(linea_id),
+            "cantidad_separada": nuevo_s,
+            "estado": nuevo_estado,
+        }
+
+
+
+@router.post("/v1/lineas-pedido/{linea_id}/separacion")
+def separar_cantidad_http(
+    linea_id: UUID,
+    cuerpo: SepararCantidadSolicitud,
+    response: Response,
+    clave_operacion: str | None = Header(
+        default=None, alias="Clave-Operacion"
+    ),
+    usuario_id: str | None = Header(
+        default=None, alias="Usuario-Id"
+    ),
+):
+    # Validar clave de operación.
+    clave = validar_clave_operacion(clave_operacion)
+
+    # Validar usuario operativo.
+    if not usuario_id:
+        raise ErrorDeNegocio(
+            401, "NO_AUTENTICADO", "Falta Usuario-Id."
+        )
+
+    try:
+        usuario = UUID(usuario_id.strip())
+    except ValueError as exc:
+        raise ErrorDeNegocio(
+            400, "SOLICITUD_INVALIDA", "Usuario-Id inválido."
+        ) from exc
+
+    # Comprobar que el usuario exista en la base de datos.
+    with pool.connection() as conn:
+        existe = conn.execute(
+            """
+            SELECT 1 FROM usuario_operativo
+            WHERE usuario_id = %s
+            """,
+            (usuario,),
+        ).fetchone()
+
+    if existe is None:
+        raise ErrorDeNegocio(
+            403,
+            "SIN_PERMISO",
+            "El usuario operativo no está registrado.",
+        )
+
+    # Identificar solicitudes repetidas.
+    huella = calcular_huella(
+        "CL-08",
+        linea_id,
+        {
+            "cantidad": cuerpo.cantidad,
+            "usuario_id": str(usuario),
+        },
+    )
+
+    with pool.connection() as conn:
+
+        def trabajo():
+            resultado = separar_cantidad(
+                conn, linea_id, cuerpo.cantidad, usuario, clave
+            )
+            return {
+                "estado_http": 200,
+                "cuerpo": resultado,
+            }
+
+        resultado, previa = ejecutar_idempotente(
+            conn,
+            clave=clave,
+            operacion="CL-08",
+            objeto="LINEA_PEDIDO",
+            objeto_id=linea_id,
+            actor_tipo="USUARIO_OPERATIVO",
+            usuario_id=usuario,
+            huella=huella,
+            trabajo=trabajo,
+        )
+
+    response.status_code = resultado["estado_http"]
+
+    if previa:
+        response.headers["Resultado-Previo"] = "true"
+
+    return resultado["cuerpo"]
