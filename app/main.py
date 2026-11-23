@@ -49,3 +49,7 @@ def salud():
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
+from app.modulos import cancelaciones
+
+app.include_router(cancelaciones.router)
