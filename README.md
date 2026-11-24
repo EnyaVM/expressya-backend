@@ -2,6 +2,25 @@
 
 Backend de ExpressYa con el stack del SDD v1.1: Python 3.12, FastAPI, psycopg 3, PostgreSQL 16 y pytest. Incluye la consulta de disponibilidad (CL-01) y el núcleo persistente de reservas (C1): checkout con reserva de 300 s (CL-02), liberación (CL-03), expiración, historial de movimientos y reconstrucción de saldos.
 
+## Interfaz para la demostración
+
+En esta Mac, abre Docker Desktop y ejecuta **Iniciar ExpressYa.command** con doble clic. Abre **http://127.0.0.1:8001** y deja la terminal encendida durante la demostración. El lanzador utiliza el contenedor `expressya-db` de la instalación descrita abajo y crea una base separada, `expressya_demo_20261123`; al volver a abrirlo conserva los pedidos y movimientos. No reconstruye ni borra la base de trabajo del equipo.
+
+La interfaz usa las operaciones del backend y persiste los resultados en PostgreSQL:
+
+- **Tienda:** catálogo por tienda, bolsa, reserva de cinco minutos, pago y liberación de reserva.
+- **Mis pedidos:** seguimiento, cancelación, devoluciones y avisos. Una cancelación después de iniciar la preparación recibe el rechazo del servidor.
+- **Operación:** inventario e historial, separación con el rol Picker (CL-08), verificación de pagos/reembolsos con evidencia y reintento de devolución con el rol Responsable.
+- **Controles de prueba:** aprobar, rechazar o dejar sin respuesta a la pasarela; crear otro cliente; consultar solicitudes y recuperar una operación sin respuesta conservando su clave. Los modos de pasarela afectan a todos los clientes de esta instancia.
+
+Los pagos utilizan la pasarela de prueba del proyecto y no hacen cargos reales. La identidad por encabezados pertenece al prototipo: el selector de personal y el alta de clientes requieren `EXPRESSYA_DEMO=1`. El lanzador escucha únicamente en esta computadora. La sesión de cliente pertenece a la pestaña; al cerrarla se puede perder el acceso directo a sus pedidos, que siguen guardados y consultables desde Operación.
+
+**Alcance pendiente:** conteo físico (CL-09), reporte de faltante (CL-10) y resolución (CL-12) no tienen rutas implementadas en la versión integrada de `main` (`a8f3d66`, PR #9 de Mauricio). La interfaz identifica estos pendientes y no inventa resultados. Los escenarios automatizados de faltantes no equivalen a una implementación operable de estas rutas.
+
+Se integraron las correcciones de robustez recibidas de Claude, resolviendo el cruce con CL-08. La espera por solicitudes concurrentes de la misma clave queda documentada como propuesta en la sección de idempotencia. Esta integración no implica que los cambios locales ya estén publicados en GitHub.
+
+Validación de esta entrega: **125 pruebas automatizadas aprobadas** en una base exclusiva de pruebas, además de comprobaciones desde la interfaz de compra, pago, devolución, verificación manual y separación. `tests/test_portal.py` comprueba los permisos de consulta, la ocultación de saldos al cliente, la separación real CL-08 seguida del bloqueo de cancelación y los avisos de devolución.
+
 ## Qué necesitas instalar (una sola vez)
 
 - Python 3.12: https://www.python.org/downloads/
