@@ -3,12 +3,12 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import time
 from typing import Any, Literal
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import APIRouter, Header, Response
 from psycopg.errors import DeadlockDetected, SerializationFailure, UniqueViolation
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import psycopg
 
@@ -875,222 +875,103 @@ def iniciar_intento_pago(
 # CL-05: Notificación de la pasarela (AT-6)
 # ==============================================================================
 
+RESULTADOS_POR_OBJETO = {"INTENTO": ("APROBADO", "RECHAZADO"), "REEMBOLSO": ("CONFIRMADO", "FALLIDO")}
+
+
 class NotificacionPasarelaSolicitud(BaseModel):
     objeto: Literal["INTENTO", "REEMBOLSO"]
     objeto_id: UUID
-    referencia_externa: str
+    referencia_externa: str = Field(pattern=r"\S")
     resultado: str
     detalle: dict[str, Any] | None = None
 
 
+def validar_resultado_notificacion(cuerpo: NotificacionPasarelaSolicitud) -> None:
+    if cuerpo.resultado not in RESULTADOS_POR_OBJETO[cuerpo.objeto]:
+        raise ErrorDeNegocio(400, "SOLICITUD_INVALIDA", f"Resultado {cuerpo.resultado} incompatible con objeto {cuerpo.objeto}.")
+
+
+def notificacion_registrada(conn, cuerpo: NotificacionPasarelaSolicitud):
+    fila = conn.execute(
+        "SELECT resultado_aplicado FROM notificacion_pasarela WHERE objeto = %s AND objeto_id = %s AND referencia_externa = %s",
+        (cuerpo.objeto, cuerpo.objeto_id, cuerpo.referencia_externa),
+    ).fetchone()
+    return fila[0] if fila else None
+
+
+def notificar_intento(conn, cuerpo: NotificacionPasarelaSolicitud) -> tuple[str, str, dict]:
+    fila = conn.execute("SELECT estado FROM intento_pago WHERE intento_id = %s", (cuerpo.objeto_id,)).fetchone()
+    if fila is None:
+        raise ErrorDeNegocio(404, "NO_ENCONTRADO", "Intento de pago no encontrado.")
+    estado, genero_ev01 = aplicar_resultado_intento(conn, cuerpo.objeto_id, cuerpo.resultado, cuerpo.referencia_externa)
+    return fila[0], estado, {"procesar_eventos": genero_ev01}
+
+
+def notificar_reembolso(conn, cuerpo: NotificacionPasarelaSolicitud) -> tuple[str, str, dict]:
+    fila = conn.execute(
+        "SELECT i.estado, i.intento_id FROM reembolso r JOIN intento_pago i ON i.intento_id = r.intento_id WHERE r.reembolso_id = %s",
+        (cuerpo.objeto_id,),
+    ).fetchone()
+    if fila is None:
+        raise ErrorDeNegocio(404, "NO_ENCONTRADO", "Reembolso no encontrado.")
+    estado = _aplicar_resultado_reembolso(conn, cuerpo.objeto_id, cuerpo.resultado, cuerpo.referencia_externa)
+    siguiente = None
+    if estado == "REEMBOLSO_EN_PROCESO":
+        siguiente = conn.execute("SELECT reembolso_actual_id FROM intento_pago WHERE intento_id = %s", (fila[1],)).fetchone()[0]
+    return fila[0], estado, {"enviar_reembolso": siguiente}
+
+
+APLICAR_NOTIFICACION = {"INTENTO": notificar_intento, "REEMBOLSO": notificar_reembolso}
+
+
+def guardar_notificacion(conn, cuerpo: NotificacionPasarelaSolicitud, clave: UUID, huella: bytes,
+                         estado_previo: str, respuesta: dict) -> None:
+    conn.execute(
+        "INSERT INTO notificacion_pasarela (objeto, intento_id, reembolso_id, objeto_id, referencia_externa, "
+        "resultado_informado, fecha_recepcion, resultado_aplicado) VALUES (%s, %s, %s, %s, %s, %s, clock_timestamp(), %s)",
+        (cuerpo.objeto, cuerpo.objeto_id if cuerpo.objeto == "INTENTO" else None,
+         cuerpo.objeto_id if cuerpo.objeto == "REEMBOLSO" else None, cuerpo.objeto_id, cuerpo.referencia_externa,
+         Jsonb({"resultado": cuerpo.resultado, "detalle": cuerpo.detalle or {}}), Jsonb(respuesta)),
+    )
+    conn.execute(
+        "INSERT INTO registro_operacion (registro_id, clave_operacion, operacion, objeto, objeto_id, huella_solicitud, "
+        "estado_anterior, estado_resultante, actor_tipo, usuario_id, fecha, resultado, respuesta, motivo_rechazo) "
+        "VALUES (%s, %s, 'CL-05', %s, %s, %s, %s, %s, 'PASARELA', NULL, clock_timestamp(), 'APLICADA', %s, NULL)",
+        (uuid4(), clave, cuerpo.objeto.lower(), cuerpo.objeto_id, huella, Jsonb({"estado": estado_previo}),
+         Jsonb({"estado": respuesta["estado_aplicado"]}), Jsonb({"estado_http": 200, "cuerpo": respuesta})),
+    )
+
+
+def aplicar_notificacion(cuerpo: NotificacionPasarelaSolicitud, clave: UUID, huella: bytes) -> tuple[dict, bool, dict]:
+    with pool.connection() as conn, conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 0))", (str(clave),))
+        previa = notificacion_registrada(conn, cuerpo)
+        if previa is not None:
+            return previa, True, {}
+        estado_previo, estado, despues = APLICAR_NOTIFICACION[cuerpo.objeto](conn, cuerpo)
+        respuesta = {"objeto": cuerpo.objeto, "objeto_id": str(cuerpo.objeto_id), "estado_aplicado": estado}
+        guardar_notificacion(conn, cuerpo, clave, huella, estado_previo, respuesta)
+        return respuesta, False, despues
+
+
+def despues_de_notificar(despues: dict) -> None:
+    if despues.get("procesar_eventos"):
+        procesar_eventos_pendientes()
+    if despues.get("enviar_reembolso"):
+        enviar_reembolso(despues["enviar_reembolso"])
+
+
 @router.post("/v1/pasarela/notificaciones")
-def recibir_notificacion_pasarela(
-    cuerpo: NotificacionPasarelaSolicitud,
-    response: Response,
-):
-    if not cuerpo.referencia_externa or not cuerpo.referencia_externa.strip():
-        raise ErrorDeNegocio(400, "SOLICITUD_INVALIDA", "referencia_externa es obligatoria.")
-
-    if cuerpo.objeto == "INTENTO" and cuerpo.resultado not in ("APROBADO", "RECHAZADO"):
-        raise ErrorDeNegocio(
-            400,
-            "SOLICITUD_INVALIDA",
-            f"Resultado {cuerpo.resultado} incompatible con objeto INTENTO.",
-        )
-    if cuerpo.objeto == "REEMBOLSO" and cuerpo.resultado not in ("CONFIRMADO", "FALLIDO"):
-        raise ErrorDeNegocio(
-            400,
-            "SOLICITUD_INVALIDA",
-            f"Resultado {cuerpo.resultado} incompatible con objeto REEMBOLSO.",
-        )
-
-    clave_derivada = uuid4()
-    import uuid as _uuid
-
-    clave_derivada = _uuid.uuid5(
-        _uuid.NAMESPACE_URL,
-        f"{cuerpo.objeto}:{cuerpo.objeto_id}:{cuerpo.referencia_externa}",
-    )
-    huella = calcular_huella(
-        "CL-05",
-        cuerpo.objeto_id,
-        {
-            "objeto": cuerpo.objeto,
-            "referencia_externa": cuerpo.referencia_externa,
-            "resultado": cuerpo.resultado,
-        },
-    )
-
-    genero_ev01 = False
-    siguiente_reembolso: UUID | None = None
-
-    def _tx_notificacion() -> tuple[dict[str, Any], bool]:
-        nonlocal genero_ev01, siguiente_reembolso
-        with pool.connection() as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 0))",
-                        (str(clave_derivada),),
-                    )
-
-                    # Verificar primero si la notificación ya fue registrada
-                    cur.execute(
-                        """
-                        SELECT resultado_aplicado
-                        FROM notificacion_pasarela
-                        WHERE objeto = %s
-                          AND objeto_id = %s
-                          AND referencia_externa = %s
-                        """,
-                        (cuerpo.objeto, cuerpo.objeto_id, cuerpo.referencia_externa),
-                    )
-                    existente = cur.fetchone()
-                    if existente is not None:
-                        return existente[0], True
-
-                    # Verificar existencia del objeto destino
-                    if cuerpo.objeto == "INTENTO":
-                        cur.execute(
-                            "SELECT estado FROM intento_pago WHERE intento_id = %s",
-                            (cuerpo.objeto_id,),
-                        )
-                        fila_obj = cur.fetchone()
-                        if fila_obj is None:
-                            raise ErrorDeNegocio(404, "NO_ENCONTRADO", "Intento de pago no encontrado.")
-                        estado_previo = fila_obj[0]
-
-                        estado_aplicado, genero_ev01 = aplicar_resultado_intento(
-                            conn,
-                            intento_id=cuerpo.objeto_id,
-                            resultado=cuerpo.resultado,
-                            referencia_externa=cuerpo.referencia_externa,
-                        )
-                    else:
-                        cur.execute(
-                            """
-                            SELECT i.estado, i.intento_id
-                            FROM reembolso r
-                            JOIN intento_pago i ON i.intento_id = r.intento_id
-                            WHERE r.reembolso_id = %s
-                            """,
-                            (cuerpo.objeto_id,),
-                        )
-                        fila_obj = cur.fetchone()
-                        if fila_obj is None:
-                            raise ErrorDeNegocio(404, "NO_ENCONTRADO", "Reembolso no encontrado.")
-                        estado_previo, intento_asociado = fila_obj
-
-                        estado_aplicado = _aplicar_resultado_reembolso(
-                            conn,
-                            reembolso_id=cuerpo.objeto_id,
-                            resultado=cuerpo.resultado,
-                            referencia_externa=cuerpo.referencia_externa,
-                        )
-                        if estado_aplicado == "REEMBOLSO_EN_PROCESO":
-                            cur.execute(
-                                """
-                                SELECT reembolso_actual_id
-                                FROM intento_pago
-                                WHERE intento_id = %s
-                                """,
-                                (intento_asociado,),
-                            )
-                            fila_sig = cur.fetchone()
-                            if fila_sig:
-                                siguiente_reembolso = fila_sig[0]
-
-                    respuesta_payload = {
-                        "objeto": cuerpo.objeto,
-                        "objeto_id": str(cuerpo.objeto_id),
-                        "estado_aplicado": estado_aplicado,
-                    }
-                    resultado_informado = {
-                        "resultado": cuerpo.resultado,
-                        "detalle": cuerpo.detalle or {},
-                    }
-
-                    intento_col = cuerpo.objeto_id if cuerpo.objeto == "INTENTO" else None
-                    reembolso_col = cuerpo.objeto_id if cuerpo.objeto == "REEMBOLSO" else None
-
-                    cur.execute(
-                        """
-                        INSERT INTO notificacion_pasarela (
-                            objeto, intento_id, reembolso_id, objeto_id,
-                            referencia_externa, resultado_informado,
-                            fecha_recepcion, resultado_aplicado
-                        )
-                        VALUES (
-                            %s, %s, %s, %s,
-                            %s, %s,
-                            clock_timestamp(), %s
-                        )
-                        ON CONFLICT (objeto, objeto_id, referencia_externa) DO NOTHING
-                        RETURNING resultado_aplicado
-                        """,
-                        (
-                            cuerpo.objeto,
-                            intento_col,
-                            reembolso_col,
-                            cuerpo.objeto_id,
-                            cuerpo.referencia_externa,
-                            Jsonb(resultado_informado),
-                            Jsonb(respuesta_payload),
-                        ),
-                    )
-                    insertada = cur.fetchone()
-                    if insertada is None:
-                        cur.execute(
-                            """
-                            SELECT resultado_aplicado
-                            FROM notificacion_pasarela
-                            WHERE objeto = %s
-                              AND objeto_id = %s
-                              AND referencia_externa = %s
-                            """,
-                            (cuerpo.objeto, cuerpo.objeto_id, cuerpo.referencia_externa),
-                        )
-                        return cur.fetchone()[0], True
-
-                    cur.execute(
-                        """
-                        INSERT INTO registro_operacion (
-                            registro_id, clave_operacion, operacion, objeto, objeto_id,
-                            huella_solicitud, estado_anterior, estado_resultante,
-                            actor_tipo, usuario_id, fecha, resultado, respuesta, motivo_rechazo
-                        )
-                        VALUES (
-                            %s, %s, 'CL-05', %s, %s,
-                            %s, %s, %s,
-                            'PASARELA', NULL, clock_timestamp(), 'APLICADA', %s, NULL
-                        )
-                        ON CONFLICT (clave_operacion) DO NOTHING
-                        """,
-                        (
-                            uuid4(),
-                            clave_derivada,
-                            cuerpo.objeto.lower(),
-                            cuerpo.objeto_id,
-                            huella,
-                            Jsonb({"estado": estado_previo}),
-                            Jsonb({"estado": estado_aplicado}),
-                            Jsonb({"estado_http": 200, "cuerpo": respuesta_payload}),
-                        ),
-                    )
-                    return respuesta_payload, False
-
-    cuerpo_respuesta, es_previo = _ejecutar_con_reintento_concurrencia(_tx_notificacion)
-
-    if not es_previo:
-        if genero_ev01:
-            procesar_eventos_pendientes()
-        if siguiente_reembolso is not None:
-            enviar_reembolso(siguiente_reembolso)
-
-    response.status_code = 200
-    if es_previo:
+def recibir_notificacion_pasarela(cuerpo: NotificacionPasarelaSolicitud, response: Response):
+    validar_resultado_notificacion(cuerpo)
+    clave = uuid5(NAMESPACE_URL, f"{cuerpo.objeto}:{cuerpo.objeto_id}:{cuerpo.referencia_externa}")
+    huella = calcular_huella("CL-05", cuerpo.objeto_id, {"objeto": cuerpo.objeto, "referencia_externa": cuerpo.referencia_externa,
+                                                       "resultado": cuerpo.resultado})
+    respuesta, previa, despues = _ejecutar_con_reintento_concurrencia(lambda: aplicar_notificacion(cuerpo, clave, huella))
+    despues_de_notificar(despues)
+    if previa:
         response.headers["Resultado-Previo"] = "true"
-    return cuerpo_respuesta
+    return respuesta
 
 
 # ==============================================================================
