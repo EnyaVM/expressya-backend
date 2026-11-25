@@ -64,23 +64,19 @@ def _parsear_uuid_cabecera(valor: str | None, nombre_cabecera: str) -> UUID:
         ) from exc
 
 
-def _exigir_rol_responsable(conn, usuario_id: UUID) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT 1
-            FROM asignacion_rol
-            WHERE usuario_id = %s AND rol = 'RESPONSABLE'
-            LIMIT 1
-            """,
-            (usuario_id,),
-        )
-        if cur.fetchone() is None:
-            raise ErrorDeNegocio(
-                403,
-                "SIN_PERMISO",
-                "El usuario no cuenta con el rol RESPONSABLE requerido.",
-            )
+TIENDA_DE = {
+    "intento": "SELECT p.darkstore_id FROM intento_pago i JOIN pedido p USING (pedido_id) WHERE i.intento_id = %s",
+    "reembolso": "SELECT p.darkstore_id FROM reembolso r JOIN pedido p USING (pedido_id) WHERE r.reembolso_id = %s",
+}
+
+
+def _exigir_responsable_de(conn, usuario_id: UUID, objeto: str, objeto_id: UUID) -> None:
+    fila = conn.execute(TIENDA_DE[objeto], (objeto_id,)).fetchone()
+    if fila is None:
+        raise ErrorDeNegocio(404, "NO_ENCONTRADO", f"El {objeto} no existe.")
+    if conn.execute("SELECT 1 FROM asignacion_rol WHERE usuario_id = %s AND darkstore_id = %s AND rol = 'RESPONSABLE'",
+                    (usuario_id, fila[0])).fetchone() is None:
+        raise ErrorDeNegocio(403, "SIN_PERMISO", "Se requiere el perfil RESPONSABLE en la tienda del pedido.")
 
 
 def _ejecutar_con_reintento_concurrencia(fn):
@@ -754,7 +750,7 @@ def _intento_en_verificacion(conn, intento_id: UUID) -> tuple:
 
 
 def _resolver_intento_manual(conn, intento_id: UUID, usuario: UUID, cuerpo) -> dict[str, Any]:
-    _exigir_rol_responsable(conn, usuario)
+    _exigir_responsable_de(conn, usuario, "intento", intento_id)
     _intento_en_verificacion(conn, intento_id)
     conn.execute("UPDATE intento_pago SET evidencia_fuente = %s, evidencia = %s, evidencia_responsable = %s WHERE intento_id = %s",
                  (cuerpo.evidencia_fuente, Jsonb(cuerpo.evidencia), usuario, intento_id))
@@ -814,7 +810,7 @@ def _reembolso_en(conn, reembolso_id: UUID, estado_esperado: str, mensaje: str) 
 
 
 def _resolver_reembolso_manual(conn, reembolso_id: UUID, usuario: UUID, cuerpo, siguiente: list) -> dict[str, Any]:
-    _exigir_rol_responsable(conn, usuario)
+    _exigir_responsable_de(conn, usuario, "reembolso", reembolso_id)
     intento_id, pedido_id, monto, motivo, referencia, estado_previo = _reembolso_en(
         conn, reembolso_id, "REEMBOLSO_EN_VERIFICACION", "El reembolso no está en REEMBOLSO_EN_VERIFICACION")
     conn.execute("UPDATE reembolso SET evidencia_revision = %s, responsable_revision = %s WHERE reembolso_id = %s",
@@ -855,7 +851,7 @@ def verificar_reembolso_manual(
 # ==============================================================================
 
 def _preparar_reintento(conn, reembolso_id: UUID, usuario: UUID) -> dict[str, Any]:
-    _exigir_rol_responsable(conn, usuario)
+    _exigir_responsable_de(conn, usuario, "reembolso", reembolso_id)
     intento_id, pedido_id, monto, motivo, referencia, _ = _reembolso_en(
         conn, reembolso_id, "REEMBOLSO_FALLIDO", "Solo se puede reintentar desde REEMBOLSO_FALLIDO")
     conn.execute("UPDATE reembolso SET fecha_envio = NULL, fecha_fallo_confirmado = NULL WHERE reembolso_id = %s", (reembolso_id,))
