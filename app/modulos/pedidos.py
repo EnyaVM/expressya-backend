@@ -410,138 +410,56 @@ def procesar_eventos_pendientes(limite: int = 50) -> int:
     return procesados
 
 
-def separar_cantidad(conn, linea_id: UUID, cantidad: int,
-                     usuario_id: UUID, clave_operacion: UUID) -> dict:
-    """CL-08: separar unidades de una línea de pedido."""
+def estado_tras_separar(q: int, s: int, k: int) -> str:
+    if s == q:
+        return "SEPARADA"
+    return "PARCIAL" if s + k == q else "ASIGNADA"
 
-    with conn.cursor() as cur:
-        # Localizar la línea y su pedido.
-        cur.execute(
-            """
-            SELECT pedido_id, darkstore_id, producto_id, reserva_id
-            FROM linea_pedido WHERE linea_id = %s
-            """,
-            (linea_id,),
-        )
-        referencia = cur.fetchone()
-        if referencia is None:
-            raise ErrorDeNegocio(404, "NO_ENCONTRADO", "Línea inexistente.")
 
-        pedido_id, tienda_id, producto_id, reserva_id = referencia
+def _linea_a_separar(conn, linea_id: UUID) -> tuple:
+    fila = conn.execute("SELECT pedido_id, darkstore_id, producto_id, reserva_id FROM linea_pedido WHERE linea_id = %s",
+                        (linea_id,)).fetchone()
+    if fila is None:
+        raise ErrorDeNegocio(404, "NO_ENCONTRADO", "Línea inexistente.")
+    return fila
 
-        # Bloquear primero el pedido.
-        cur.execute(
-            "SELECT estado FROM pedido WHERE pedido_id = %s FOR UPDATE",
-            (pedido_id,),
-        )
-        if cur.fetchone()[0] != "CONFIRMADO":
-            raise ErrorDeNegocio(
-                409, "ESTADO_INCOMPATIBLE", "Pedido no confirmado."
-            )
 
-        # Comprobar el permiso del picker en la tienda.
-        cur.execute(
-            """
-            SELECT 1 FROM asignacion_rol
-            WHERE usuario_id = %s AND darkstore_id = %s
-              AND rol = 'PICKER'
-            """,
-            (usuario_id, tienda_id),
-        )
-        if cur.fetchone() is None:
-            raise ErrorDeNegocio(
-                403, "SIN_PERMISO", "Usuario sin rol PICKER en la tienda."
-            )
+def _exigir_picker(conn, usuario_id: UUID, tienda_id: UUID) -> None:
+    if conn.execute("SELECT 1 FROM asignacion_rol WHERE usuario_id = %s AND darkstore_id = %s AND rol = 'PICKER'",
+                    (usuario_id, tienda_id)).fetchone() is None:
+        raise ErrorDeNegocio(403, "SIN_PERMISO", "Usuario sin rol PICKER en la tienda.")
 
-        # Bloquear y comprobar inventario.
-        cur.execute(
-            """
-            SELECT e, estado_producto FROM inventario
-            WHERE darkstore_id = %s AND producto_id = %s
-            FOR UPDATE
-            """,
-            (tienda_id, producto_id),
-        )
-        inventario = cur.fetchone()
-        if inventario is None or inventario[1] != "HABILITADO":
-            raise ErrorDeNegocio(
-                409, "PRODUCTO_BLOQUEADO", "Producto no habilitado."
-            )
-        if cantidad <= 0 or inventario[0] < cantidad:
-            raise ErrorDeNegocio(
-                409, "SIN_DISPONIBLE", "Cantidad no disponible."
-            )
 
-        # Bloquear y validar la línea.
-        cur.execute(
-            """
-            SELECT q, s, k, estado FROM linea_pedido
-            WHERE linea_id = %s FOR UPDATE
-            """,
-            (linea_id,),
-        )
-        q, s, k, estado = cur.fetchone()
+def _exigir_existencias(conn, tienda_id: UUID, producto_id: UUID, cantidad: int) -> None:
+    e, estado = conn.execute("SELECT e, estado_producto FROM inventario WHERE darkstore_id = %s AND producto_id = %s FOR UPDATE",
+                             (tienda_id, producto_id)).fetchone()
+    if estado != "HABILITADO":
+        raise ErrorDeNegocio(409, "PRODUCTO_BLOQUEADO", "Producto no habilitado.")
+    if e < cantidad:
+        raise ErrorDeNegocio(409, "SIN_DISPONIBLE", "Cantidad no disponible.")
 
-        if estado != "ASIGNADA" or s + k + cantidad > q:
-            raise ErrorDeNegocio(
-                409, "ESTADO_INCOMPATIBLE",
-                "La línea no admite esa cantidad."
-            )
 
-        nuevo_s = s + cantidad
-        nuevo_estado = (
-            "SEPARADA" if nuevo_s == q
-            else "PARCIAL" if nuevo_s + k == q
-            else "ASIGNADA"
-        )
-
-        # Actualizar la línea y las existencias físicas.
-        cur.execute(
-            """
-            UPDATE linea_pedido SET s = %s, estado = %s
-            WHERE linea_id = %s
-            """,
-            (nuevo_s, nuevo_estado, linea_id),
-        )
-        cur.execute(
-            """
-            UPDATE inventario SET e = e - %s
-            WHERE darkstore_id = %s AND producto_id = %s
-            """,
-            (cantidad, tienda_id, producto_id),
-        )
-
-        # Registrar el movimiento auditable.
-        cur.execute(
-            """
-            INSERT INTO movimiento_inventario
-            (darkstore_id, producto_id, tipo, motivo,
-             usuario_id, clave_operacion,
-             referencia_reserva_id, referencia_linea_id)
-            VALUES (%s, %s, 'SEPARACION', 'Separación CL-08',
-                    %s, %s, %s, %s)
-            RETURNING movimiento_id
-            """,
-            (tienda_id, producto_id, usuario_id,
-             clave_operacion, reserva_id, linea_id),
-        )
-        movimiento_id = cur.fetchone()[0]
-
-        cur.execute(
-            """
-            INSERT INTO movimiento_saldo
-            (movimiento_id, saldo, cantidad)
-            VALUES (%s, 'E', %s), (%s, 'C', %s)
-            """,
-            (movimiento_id, -cantidad, movimiento_id, -cantidad),
-        )
-
-        return {
-            "linea_id": str(linea_id),
-            "cantidad_separada": nuevo_s,
-            "estado": nuevo_estado,
-        }
-
+def separar_cantidad(conn, linea_id: UUID, cantidad: int, usuario_id: UUID, clave_operacion: UUID) -> dict:
+    pedido_id, tienda_id, producto_id, reserva_id = _linea_a_separar(conn, linea_id)
+    if conn.execute("SELECT estado FROM pedido WHERE pedido_id = %s FOR UPDATE", (pedido_id,)).fetchone()[0] != "CONFIRMADO":
+        raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE", "Pedido no confirmado.")
+    _exigir_picker(conn, usuario_id, tienda_id)
+    _exigir_existencias(conn, tienda_id, producto_id, cantidad)
+    q, s, k, estado = conn.execute("SELECT q, s, k, estado FROM linea_pedido WHERE linea_id = %s FOR UPDATE", (linea_id,)).fetchone()
+    if estado != "ASIGNADA" or s + k + cantidad > q:
+        raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE", "La línea no admite esa cantidad.")
+    nuevo_estado = estado_tras_separar(q, s + cantidad, k)
+    conn.execute("UPDATE linea_pedido SET s = %s, estado = %s WHERE linea_id = %s", (s + cantidad, nuevo_estado, linea_id))
+    conn.execute("UPDATE inventario SET e = e - %s WHERE darkstore_id = %s AND producto_id = %s", (cantidad, tienda_id, producto_id))
+    movimiento_id = conn.execute(
+        "INSERT INTO movimiento_inventario (darkstore_id, producto_id, tipo, motivo, usuario_id, clave_operacion, "
+        "referencia_reserva_id, referencia_linea_id) VALUES (%s, %s, 'SEPARACION', 'Separación CL-08', %s, %s, %s, %s) "
+        "RETURNING movimiento_id",
+        (tienda_id, producto_id, usuario_id, clave_operacion, reserva_id, linea_id),
+    ).fetchone()[0]
+    conn.execute("INSERT INTO movimiento_saldo (movimiento_id, saldo, cantidad) VALUES (%s, 'E', %s), (%s, 'C', %s)",
+                 (movimiento_id, -cantidad, movimiento_id, -cantidad))
+    return {"linea_id": str(linea_id), "cantidad_separada": s + cantidad, "estado": nuevo_estado}
 
 
 @router.post("/v1/lineas-pedido/{linea_id}/separaciones")
