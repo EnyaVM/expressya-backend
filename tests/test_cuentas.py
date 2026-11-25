@@ -267,3 +267,32 @@ def test_tienda_e_interno_conservan_su_propia_sesion_en_el_mismo_navegador():
     assert salida.status_code == 200
     assert navegador.get("/v1/auth/me", headers={"X-Portal": "interno"}).status_code == 401
     assert navegador.get("/v1/auth/me", headers={"X-Portal": "cliente"}).json()["cuenta_id"] == cliente["cuenta_id"]
+
+
+def test_dos_cuentas_internas_conviven_en_pestanas_del_mismo_navegador():
+    tienda, _ = tienda_con_productos(1)
+    navegador = TestClient(app)
+    pestanas = {"picker": str(uuid4()), "supervisor": str(uuid4())}
+    picker = navegador.post("/v1/auth/login", headers={"X-Ventana": pestanas["picker"]},
+                            json={"usuario": cuenta("INTERNO", [(tienda, "PICKER")]), "clave": CLAVE, "portal": "interno"}).json()
+    supervisor = navegador.post("/v1/auth/login", headers={"X-Ventana": pestanas["supervisor"]},
+                                json={"usuario": cuenta("INTERNO", [(tienda, "SUPERVISOR")]), "clave": CLAVE, "portal": "interno"}).json()
+
+    def yo(pestana):
+        return navegador.get("/v1/auth/me", headers={"X-Portal": "interno", "X-Ventana": pestanas[pestana]})
+
+    antes = (yo("picker").json()["cuenta_id"], yo("supervisor").json()["cuenta_id"])
+    salida = navegador.post("/v1/auth/logout", json={},
+                            headers={"X-Portal": "interno", "X-Ventana": pestanas["picker"], "X-CSRF-Token": picker["csrf"]})
+
+    assert antes == (picker["cuenta_id"], supervisor["cuenta_id"])
+    assert salida.status_code == 200
+    assert yo("picker").status_code == 401
+    assert yo("supervisor").json()["cuenta_id"] == supervisor["cuenta_id"]
+
+
+def test_una_ventana_con_caracteres_raros_no_abre_sesion():
+    tienda, _ = tienda_con_productos(1)
+    respuesta = TestClient(app).post("/v1/auth/login", headers={"X-Ventana": "a;b=c"},
+                                     json={"usuario": cuenta("INTERNO", [(tienda, "PICKER")]), "clave": CLAVE, "portal": "interno"})
+    assert respuesta.status_code == 400

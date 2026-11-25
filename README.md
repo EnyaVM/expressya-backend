@@ -275,7 +275,7 @@ Decisiones `PROPUESTA` del equipo (trazadas a D-05, P4 y P8):
 Reglas (`app/seguridad.py`, una sola frontera):
 - Las contraseñas se guardan con scrypt y sal; los tokens de sesión solo como SHA-256.
 - Un usuario inexistente y una contraseña incorrecta responden igual (401).
-- Cada cuenta entra solo a su portal: clientes a la tienda; personal y administración al interno. Cada portal guarda su propia cookie (`expressya_sesion_cliente` y `expressya_sesion_interno`) y la página indica cuál usar con `X-Portal`, así que en el mismo navegador se puede tener abierta la tienda como cliente y el área interna como empleado.
+- Cada cuenta entra solo a su portal: clientes a la tienda; personal y administración al interno. Cada pestaña guarda su propia sesión: la página genera un identificador por pestaña y lo manda en `X-Ventana` junto con `X-Portal`, y la cookie se llama `expressya_sesion_<portal>_<ventana>`. Así, en el mismo navegador se pueden tener abiertas varias cuentas a la vez (cliente en una pestaña, picker en otra, supervisor en otra). Una pestaña nueva pide iniciar sesión; duplicar una pestaña conserva la misma cuenta.
 - Los perfiles se validan en la tienda del objeto: por ejemplo, CL-06 y CL-17 exigen RESPONSABLE en la tienda del pedido.
 - Toda operación que cambia algo con cookie exige el encabezado `X-CSRF-Token`.
 - La identidad (`Cliente-Id` o `Usuario-Id`) la pone el servidor a partir de la sesión; lo que mande el navegador se descarta.

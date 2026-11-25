@@ -63,8 +63,18 @@ class ErrorApi extends Error {
   }
 }
 
+function ventanaDeEstaPestana() {
+  let ventana = sessionStorage.getItem('expressya-ventana');
+  if (!ventana) {
+    ventana = crypto.randomUUID();
+    sessionStorage.setItem('expressya-ventana', ventana);
+  }
+  return ventana;
+}
+
 const Sesion = {
   portal: document.documentElement.dataset.portal,
+  ventana: ventanaDeEstaPestana(),
   cuenta: null,
   alPerderla: () => {},
   clave(tipo) {
@@ -73,7 +83,7 @@ const Sesion = {
 };
 
 async function api(path, { method = 'GET', body, clave } = {}) {
-  const headers = { 'Content-Type': 'application/json', 'X-Portal': Sesion.portal };
+  const headers = { 'Content-Type': 'application/json', 'X-Portal': Sesion.portal, 'X-Ventana': Sesion.ventana };
   if (method !== 'GET' && Sesion.cuenta?.csrf) headers['X-CSRF-Token'] = Sesion.cuenta.csrf;
   if (clave) headers['Clave-Operacion'] = clave;
   let res;
