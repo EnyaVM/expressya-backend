@@ -19,38 +19,40 @@ registro = logging.getLogger("expressya.vencimiento")
 registro_pagos = logging.getLogger("expressya.pagos")
 
 
-async def revisar_reservas_vencidas():
-    while True:
-        try:
-            expiradas = await asyncio.to_thread(reservas.expirar_vencidas)
-            if expiradas:
-                registro.info("Reservas expiradas: %s", expiradas)
-        except Exception:
-            registro.exception("Fallo la revision de reservas vencidas")
-        await asyncio.sleep(SEGUNDOS_ENTRE_REVISIONES)
+def expirar_reservas():
+    expiradas = reservas.expirar_vencidas()
+    if expiradas:
+        registro.info("Reservas expiradas: %s", expiradas)
 
 
-async def procesar_eventos_y_recuperacion():
+def procesar_pagos():
+    for nombre, tarea in (("Eventos EV-01 procesados", pedidos.procesar_eventos_pendientes),
+                          ("Intentos INICIADO recuperados a EN_VERIFICACION", pagos.recuperar_intentos_iniciados),
+                          ("Reembolsos sin enviar recuperados", pagos.recuperar_reembolsos_sin_enviar)):
+        cantidad = tarea()
+        if cantidad:
+            registro_pagos.info("%s: %s", nombre, cantidad)
+
+
+def ejecutar_ciclo(tarea, bitacora) -> bool:
+    try:
+        tarea()
+        return True
+    except Exception:
+        bitacora.exception("Fallo el ciclo %s", tarea.__name__)
+        return False
+
+
+async def repetir(tarea, bitacora):
     while True:
-        try:
-            procesados = await asyncio.to_thread(pedidos.procesar_eventos_pendientes)
-            if procesados:
-                registro_pagos.info("Eventos EV-01 procesados: %s", procesados)
-            recuperados = await asyncio.to_thread(pagos.recuperar_intentos_iniciados)
-            if recuperados:
-                registro_pagos.info("Intentos INICIADO recuperados a EN_VERIFICACION: %s", recuperados)
-            reenviados = await asyncio.to_thread(pagos.recuperar_reembolsos_sin_enviar)
-            if reenviados:
-                registro_pagos.info("Reembolsos sin enviar recuperados: %s", reenviados)
-        except Exception:
-            registro_pagos.exception("Fallo el ciclo de eventos y recuperacion de pagos")
+        await asyncio.to_thread(ejecutar_ciclo, tarea, bitacora)
         await asyncio.sleep(SEGUNDOS_ENTRE_REVISIONES)
 
 
 @asynccontextmanager
 async def ciclo_de_vida(app: FastAPI):
-    tarea_vencimiento = asyncio.create_task(revisar_reservas_vencidas())
-    tarea_eventos = asyncio.create_task(procesar_eventos_y_recuperacion())
+    tarea_vencimiento = asyncio.create_task(repetir(expirar_reservas, registro))
+    tarea_eventos = asyncio.create_task(repetir(procesar_pagos, registro_pagos))
     yield
     tarea_vencimiento.cancel()
     tarea_eventos.cancel()
