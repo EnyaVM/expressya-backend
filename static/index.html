@@ -1,23 +1,21 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
-<head>
-  <meta charset="utf-8">
-  <title>ExpressYa</title>
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f5f5f7"><title>ExpressYa — Lo quieres. Lo tienes.</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body>
-  <h1>ExpressYa</h1>
-  <input id="tienda" placeholder="ID de la Dark Store" size="40">
-  <input id="producto" placeholder="ID del producto" size="40">
-  <button id="consultar">¿Hay?</button>
-  <p id="resultado"></p>
-  <script>
-    document.getElementById("consultar").addEventListener("click", async () => {
-      const tienda = document.getElementById("tienda").value;
-      const producto = document.getElementById("producto").value;
-      const respuesta = await fetch(`/v1/darkstores/${tienda}/productos/${producto}/disponibilidad`);
-      const datos = await respuesta.json();
-      document.getElementById("resultado").textContent = respuesta.ok ? datos.disponibilidad : "No existe ese producto en esa tienda";
-    });
-  </script>
-</body>
-</html>
+<a class="skip" href="#main">Saltar al contenido</a>
+<header><nav aria-label="Navegación principal"><a href="#tienda" data-view="tienda" class="brand">express<span>ya</span><i>®</i></a><div class="navlinks"><button data-view="tienda" class="nav active">Tienda</button><button data-view="pedidos" class="nav">Mis pedidos</button><button data-view="operacion" class="nav">Operación</button></div><button id="bag" class="bag" aria-label="Abrir bolsa">Bolsa <span id="bag-count">0</span></button></nav></header>
+<div class="environment"><span>Prototipo académico</span><span>Pagos con pasarela de prueba. Sin cargos reales.</span><button id="settings-open">Controles de prueba</button></div>
+<main id="main">
+<section id="view-tienda" class="view">
+<div class="hero"><div class="hero-copy"><p class="eyebrow">MENOS ESPERA. MÁS ESTILO.</p><h1>Lo quieres.<br><span>Lo tienes.</span></h1><p class="hero-description">Tus esenciales, a un checkout de distancia. <br>Compra lo que sí está disponible.</p><a class="primary" href="#catalogo">Explorar colección</a><p class="hero-foot">Elige. Reserva. Hazlo tuyo.</p></div><div class="hero-art" id="hero-art" aria-hidden="true"></div></div>
+<section id="catalogo" class="collection wrap"><div class="section-heading"><div><p class="eyebrow">LA COLECCIÓN</p><h2>Esenciales. Sin complicaciones.</h2></div><label class="store-label">Tu tienda<select id="store" aria-label="Seleccionar tienda"></select></label></div><div class="category-row"><div id="filters" class="pills"><button class="selected" data-filter="todos">Todo</button><button data-filter="superior">Tops y abrigos</button><button data-filter="inferior">Denim</button><button data-filter="accesorios">Accesorios</button></div><span id="catalog-status" class="muted">Consultando disponibilidad…</span></div><div id="products" class="products"></div></section>
+<section class="promise wrap"><div><span class="promise-icon">✓</span><h3>Disponibilidad al momento.</h3><p>Una tienda, un pedido. El stock se comprueba al reservar.</p></div><div><span class="promise-icon">◷</span><h3>Cinco minutos para decidir.</h3><p>Al confirmar tu bolsa, tus prendas quedan reservadas durante 300 segundos.</p></div><div><span class="promise-icon">↺</span><h3>Tu pedido, bajo control.</h3><p>Consulta el pago, la preparación y las devoluciones desde un solo lugar.</p></div></section>
+</section>
+<section id="view-pedidos" class="view wrap page" hidden><p class="eyebrow">TU CUENTA</p><div class="section-heading"><h1>Todo, en su lugar.</h1><button id="refresh-orders" class="secondary">Actualizar pedidos</button></div><p class="lead">Sigue tu compra, revisa tu pago y consulta tus avisos.</p><div id="orders" class="order-list"></div></section>
+<section id="view-operacion" class="view wrap page" hidden><p class="eyebrow">DETRÁS DE CADA PEDIDO</p><div class="section-heading"><h1>Todo en orden.</h1><button id="refresh-ops" class="secondary">Actualizar operación</button></div><p class="lead">Prepara pedidos y consulta el inventario de tu tienda.</p><div class="ops-toolbar"><label>Tienda<select id="ops-store"></select></label><label>Personal de prueba<select id="operator"></select></label></div><div id="ops-content"></div></section>
+</main>
+<footer class="wrap"><a class="brand" data-view="tienda" href="#tienda">express<span>ya</span></a><p>Ingeniería de Software · Equipo 03</p><span id="connection">Conectando con ExpressYa…</span></footer>
+<dialog id="drawer" class="drawer"><div class="dialog-header"><p class="eyebrow" id="drawer-kicker">TU BOLSA</p><button class="icon-button" data-close="drawer" aria-label="Cerrar panel">×</button></div><div id="drawer-content"></div></dialog>
+<dialog id="settings" class="settings"><div class="dialog-header"><p class="eyebrow">ENTORNO DE PRUEBA</p><button class="icon-button" data-close="settings" aria-label="Cerrar controles">×</button></div><h2>Tú diriges la prueba.</h2><p>Estos controles cambian la respuesta de la pasarela de prueba del backend. Los pedidos y movimientos se guardan en PostgreSQL.</p><div id="pending-recovery" class="notice warn" hidden><p>Una operación quedó sin respuesta. Recupera su resultado con la misma clave antes de continuar.</p><button id="recover-pending" class="secondary" data-mutate>Recuperar operación pendiente</button></div><label>Al cobrar<select id="pay-mode"><option value="APROBAR">Aprobar el pago</option><option value="RECHAZAR">Rechazar el pago</option><option value="NO_RESPONDER">Dejar el pago en verificación</option></select></label><label>Al reembolsar<select id="refund-mode"><option value="CONFIRMAR">Confirmar devolución</option><option value="FALLAR">Confirmar fallo</option><option value="NO_RESPONDER">Dejar devolución en verificación</option></select></label><button id="save-modes" class="primary">Guardar configuración</button><hr><h3>Otro cliente de prueba</h3><p>Crea una sesión diferente para probar reservas en paralelo. Los pedidos de la sesión actual permanecen guardados.</p><button id="new-client" class="secondary">Cambiar a un cliente nuevo</button><p><a class="secondary" href="/" target="_blank" rel="noopener">Abrir otro cliente en otra pestaña</a></p><p class="small">Identidad temporal del prototipo. No es un inicio de sesión de producción.</p><details><summary>Actividad de solicitudes</summary><pre id="request-log"></pre></details></dialog>
+<div id="toast" role="status" aria-live="polite" hidden></div>
+</body></html>

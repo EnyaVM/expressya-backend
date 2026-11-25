@@ -191,3 +191,36 @@ def test_lo_reembolsado_nunca_supera_lo_cobrado():
     assert sum(r[1] for r in reembolsos) == Decimal("400.00")
     assert all(r[4] is not None for r in reembolsos)
     assert estado_intento(intento_id) == "REEMBOLSADO_TOTAL"
+
+
+def test_la_respuesta_de_cancelacion_sigue_el_esquema_pedido_del_openapi():
+    darkstore_id, (producto_id,) = tienda_con_productos(1)
+    pedido_id, cliente_id, _ = pedido_pagado(darkstore_id, [(producto_id, 1)])
+
+    cuerpo = cancelar(pedido_id, cliente_id).json()
+
+    assert {"pedido_id", "estado", "total_vigente", "ajuste_pendiente"} <= set(cuerpo)
+    assert (cuerpo["estado"], cuerpo["total_vigente"]) == ("CANCELADO", "0.00")
+
+
+def test_linea_con_faltante_en_validacion_no_se_cancela_por_el_cliente():
+    darkstore_id, (producto_id,) = tienda_con_productos(1)
+    pedido_id, cliente_id, intento_id = pedido_pagado(darkstore_id, [(producto_id, 2)])
+    with pool.connection() as conn:
+        conn.execute("UPDATE linea_pedido SET estado = 'NO_SURTIBLE' WHERE pedido_id = %s", (pedido_id,))
+
+    respuesta = cancelar(pedido_id, cliente_id)
+
+    assert respuesta.status_code == 409
+    assert respuesta.json()["codigo"] == "ESTADO_INCOMPATIBLE"
+    assert reembolsos_de(intento_id) == []
+
+
+def test_cuerpo_invalido_responde_400_solicitud_invalida():
+    darkstore_id, (producto_id,) = tienda_con_productos(1)
+    pedido_id, cliente_id, _ = pedido_pagado(darkstore_id, [(producto_id, 1)])
+
+    respuesta = cancelar(pedido_id, cliente_id, motivo="")
+
+    assert respuesta.status_code == 400
+    assert respuesta.json()["codigo"] == "SOLICITUD_INVALIDA"

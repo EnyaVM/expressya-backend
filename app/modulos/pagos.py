@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import time
@@ -9,7 +10,9 @@ from psycopg.errors import DeadlockDetected, SerializationFailure, UniqueViolati
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
-from app.db import pool
+import psycopg
+
+from app.db import DATABASE_URL, pool
 from app.errores import ErrorDeNegocio
 from app.idempotencia import calcular_huella, ejecutar_idempotente, validar_clave_operacion
 from app.modulos import pasarela_simulada
@@ -25,13 +28,22 @@ def _formatear_dinero(valor: Decimal) -> str:
     return f"{valor:.2f}"
 
 
+MONTO_MAXIMO = Decimal("999999999999.99")
+
+
 def _parsear_dinero(texto: str) -> Decimal:
     try:
-        valor = Decimal(str(texto))
+        valor = Decimal(str(texto).strip())
     except (InvalidOperation, ValueError) as exc:
         raise ErrorDeNegocio(400, "SOLICITUD_INVALIDA", "Formato de monto inválido.") from exc
-    if valor <= Decimal("0.00") or valor.as_tuple().exponent < -2:
-        raise ErrorDeNegocio(400, "SOLICITUD_INVALIDA", "El monto debe ser mayor a cero con dos decimales.")
+    if not valor.is_finite():
+        raise ErrorDeNegocio(400, "SOLICITUD_INVALIDA", "El monto debe ser un número finito.")
+    if valor <= 0 or valor > MONTO_MAXIMO or valor.as_tuple().exponent < -2:
+        raise ErrorDeNegocio(
+            400,
+            "SOLICITUD_INVALIDA",
+            "El monto debe ser mayor a cero, con dos decimales y dentro del límite permitido.",
+        )
     return valor.quantize(Decimal("0.01"))
 
 
@@ -507,6 +519,39 @@ def recuperar_intentos_iniciados(segundos: int = PLAZO_PASARELA_SEGUNDOS) -> int
                 return cur.rowcount
 
 
+def recuperar_reembolsos_sin_enviar(segundos: int = PLAZO_PASARELA_SEGUNDOS) -> int:
+    with pool.connection() as conn:
+        conn.execute(
+            """
+            UPDATE intento_pago i
+            SET estado = 'REEMBOLSO_EN_VERIFICACION'
+            FROM reembolso r
+            WHERE r.reembolso_id = i.reembolso_actual_id
+              AND i.estado = 'REEMBOLSO_EN_PROCESO'
+              AND r.fecha_envio IS NOT NULL
+              AND r.fecha_confirmacion IS NULL
+              AND clock_timestamp() - r.fecha_envio >= make_interval(secs => %s)
+            """,
+            (segundos,),
+        )
+        conn.commit()
+        pendientes = conn.execute(
+            """
+            SELECT r.reembolso_id
+            FROM intento_pago i
+            JOIN reembolso r ON r.reembolso_id = i.reembolso_actual_id
+            WHERE i.estado = 'REEMBOLSO_EN_PROCESO'
+              AND r.fecha_envio IS NULL
+              AND clock_timestamp() - r.fecha_solicitud >= make_interval(secs => %s)
+            ORDER BY r.fecha_solicitud
+            """,
+            (segundos,),
+        ).fetchall()
+    for (reembolso_id,) in pendientes:
+        enviar_reembolso(reembolso_id)
+    return len(pendientes)
+
+
 # ==============================================================================
 # CL-04: Iniciar un intento de pago
 # ==============================================================================
@@ -515,8 +560,61 @@ class IniciarPagoSolicitud(BaseModel):
     monto: str
 
 
-@router.post("/v1/pedidos/{pedido_id}/intentos-pago")
-def iniciar_intento_pago(
+def _responder_intento_sin_respuesta(intento_id: UUID, clave: UUID, huella: bytes, response: Response):
+    with pool.connection() as conn:
+
+        def _trabajo() -> dict[str, Any]:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE intento_pago SET estado = 'EN_VERIFICACION'
+                    WHERE intento_id = %s AND estado = 'INICIADO'
+                    """,
+                    (intento_id,),
+                )
+                cur.execute(
+                    """
+                    SELECT i.pedido_id, i.monto, i.estado, r.t_vence
+                    FROM intento_pago i
+                    JOIN pedido p ON p.pedido_id = i.pedido_id
+                    JOIN reserva r ON r.reserva_id = p.reserva_id
+                    WHERE i.intento_id = %s
+                    """,
+                    (intento_id,),
+                )
+                pedido_id, monto, estado, t_vence = cur.fetchone()
+            pendiente = estado in ("INICIADO", "EN_VERIFICACION")
+            return {
+                "estado_http": 202 if pendiente else 201,
+                "cuerpo": _serializar_intento(
+                    intento_id=intento_id,
+                    pedido_id=pedido_id,
+                    monto=monto,
+                    estado=estado,
+                    t_vence_reserva=t_vence,
+                ),
+                "estado_anterior": {"estado": "INICIADO"},
+                "estado_resultante": {"estado": estado},
+            }
+
+        pedido_id = conn.execute("SELECT pedido_id FROM intento_pago WHERE intento_id = %s", (intento_id,)).fetchone()[0]
+        respuesta, previa = ejecutar_idempotente(
+            conn=conn,
+            clave=clave,
+            operacion="CL-04",
+            objeto="pedido",
+            objeto_id=pedido_id,
+            actor_tipo="CLIENTE",
+            huella=huella,
+            trabajo=_trabajo,
+        )
+        conn.commit()
+    response.status_code = respuesta["estado_http"]
+    response.headers["Resultado-Previo"] = "true"
+    return respuesta["cuerpo"]
+
+
+def _iniciar_intento_pago_en(
     pedido_id: UUID,
     cuerpo: IniciarPagoSolicitud,
     response: Response,
@@ -526,7 +624,11 @@ def iniciar_intento_pago(
     clave = validar_clave_operacion(clave_operacion)
     cliente_uuid = _parsear_uuid_cabecera(cliente_id, "Cliente-Id")
     monto_decimal = _parsear_dinero(cuerpo.monto)
-    huella = calcular_huella("CL-04", pedido_id, {"monto": _formatear_dinero(monto_decimal)})
+    huella = calcular_huella(
+        "CL-04",
+        pedido_id,
+        {"monto": _formatear_dinero(monto_decimal), "cliente_id": str(cliente_uuid)},
+    )
 
     # 1. Verificación rápida de clave previa antes de crear intento
     with pool.connection() as conn:
@@ -565,6 +667,21 @@ def iniciar_intento_pago(
                     response.headers["Resultado-Previo"] = "true"
                     return respuesta_guardada["cuerpo"]
 
+    # 1b. La clave ya quedó en un intento cuya respuesta no se guardó (caída a medio camino)
+    with pool.connection() as conn:
+        fila_clave = conn.execute(
+            "SELECT intento_id, huella_solicitud FROM intento_pago WHERE clave_operacion = %s",
+            (clave,),
+        ).fetchone()
+    if fila_clave is not None:
+        if bytes(fila_clave[1]) != huella:
+            raise ErrorDeNegocio(
+                409,
+                "CONFLICTO_DE_CLAVE",
+                "La Clave-Operacion ya fue utilizada con otro monto o cuerpo.",
+            )
+        return _responder_intento_sin_respuesta(fila_clave[0], clave, huella, response)
+
     # 2. Transacción 1: validar pedido/reserva e insertar intento en INICIADO
     intento_id = uuid4()
     t_vence_reserva: datetime | None = None
@@ -574,6 +691,20 @@ def iniciar_intento_pago(
         with pool.connection() as conn:
             with conn.transaction():
                 with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 0))",
+                        (str(clave),),
+                    )
+                    cur.execute(
+                        "SELECT 1 FROM registro_operacion WHERE clave_operacion = %s",
+                        (clave,),
+                    )
+                    if cur.fetchone() is not None:
+                        raise ErrorDeNegocio(
+                            409,
+                            "CONFLICTO_DE_CLAVE",
+                            "La Clave-Operacion ya fue utilizada por otra operación.",
+                        )
                     cur.execute(
                         """
                         SELECT pedido_id, reserva_id, cliente_id, total_vigente, estado
@@ -618,13 +749,15 @@ def iniciar_intento_pago(
                         cur.execute(
                             """
                             INSERT INTO intento_pago (
-                                intento_id, pedido_id, monto, fecha_inicio, estado
+                                intento_id, pedido_id, monto, fecha_inicio, estado,
+                                clave_operacion, huella_solicitud
                             )
                             VALUES (
-                                %s, %s, %s, clock_timestamp(), 'INICIADO'
+                                %s, %s, %s, clock_timestamp(), 'INICIADO',
+                                %s, %s
                             )
                             """,
-                            (intento_id, pedido_id, monto_decimal),
+                            (intento_id, pedido_id, monto_decimal, clave, huella),
                         )
                     except UniqueViolation as exc:
                         raise ErrorDeNegocio(
@@ -713,6 +846,29 @@ def iniciar_intento_pago(
     if es_previo:
         response.headers["Resultado-Previo"] = "true"
     return respuesta_final["cuerpo"]
+
+
+@contextmanager
+def _cerrojo_de_clave(clave: UUID):
+    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+        conn.execute("SELECT pg_advisory_lock(hashtextextended(%s::text, 1))", (str(clave),))
+        try:
+            yield
+        finally:
+            conn.execute("SELECT pg_advisory_unlock(hashtextextended(%s::text, 1))", (str(clave),))
+
+
+@router.post("/v1/pedidos/{pedido_id}/intentos-pago")
+def iniciar_intento_pago(
+    pedido_id: UUID,
+    cuerpo: IniciarPagoSolicitud,
+    response: Response,
+    clave_operacion: str | None = Header(default=None, alias="Clave-Operacion"),
+    cliente_id: str | None = Header(default=None, alias="Cliente-Id"),
+):
+    clave = validar_clave_operacion(clave_operacion)
+    with _cerrojo_de_clave(clave):
+        return _iniciar_intento_pago_en(pedido_id, cuerpo, response, clave_operacion, cliente_id)
 
 
 # ==============================================================================
@@ -962,6 +1118,7 @@ def verificar_intento_manual(
         intento_id,
         {
             "tipo": "INTENTO",
+            "usuario_id": str(usuario_uuid),
             "resultado": cuerpo.resultado,
             "evidencia_fuente": cuerpo.evidencia_fuente,
             "evidencia": cuerpo.evidencia,
@@ -1080,6 +1237,7 @@ def verificar_reembolso_manual(
         reembolso_id,
         {
             "tipo": "REEMBOLSO",
+            "usuario_id": str(usuario_uuid),
             "resultado": cuerpo.resultado,
             "evidencia": cuerpo.evidencia,
         },
@@ -1210,7 +1368,7 @@ def reintentar_reembolso(
 ):
     clave = validar_clave_operacion(clave_operacion)
     usuario_uuid = _parsear_uuid_cabecera(usuario_id, "Usuario-Id")
-    huella = calcular_huella("CL-17", reembolso_id, {})
+    huella = calcular_huella("CL-17", reembolso_id, {"usuario_id": str(usuario_uuid)})
 
     debe_enviar = False
 

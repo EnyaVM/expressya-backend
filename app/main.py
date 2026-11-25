@@ -6,7 +6,10 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.db import pool
-from app.errores import ErrorDeNegocio, responder_error_de_negocio
+from fastapi.exceptions import RequestValidationError
+
+from app.errores import ErrorDeNegocio, responder_error_de_negocio, responder_validacion
+from app.modulos import portal
 from app.modulos import cancelaciones, inventario, pagos, pasarela_simulada, pedidos, reservas
 
 SEGUNDOS_ENTRE_REVISIONES = 5
@@ -35,6 +38,9 @@ async def procesar_eventos_y_recuperacion():
             recuperados = await asyncio.to_thread(pagos.recuperar_intentos_iniciados)
             if recuperados:
                 registro_pagos.info("Intentos INICIADO recuperados a EN_VERIFICACION: %s", recuperados)
+            reenviados = await asyncio.to_thread(pagos.recuperar_reembolsos_sin_enviar)
+            if reenviados:
+                registro_pagos.info("Reembolsos sin enviar recuperados: %s", reenviados)
         except Exception:
             registro_pagos.exception("Fallo el ciclo de eventos y recuperacion de pagos")
         await asyncio.sleep(SEGUNDOS_ENTRE_REVISIONES)
@@ -51,6 +57,8 @@ async def ciclo_de_vida(app: FastAPI):
 
 app = FastAPI(title="ExpressYa", lifespan=ciclo_de_vida)
 app.add_exception_handler(ErrorDeNegocio, responder_error_de_negocio)
+app.add_exception_handler(RequestValidationError, responder_validacion)
+app.include_router(portal.router)
 app.include_router(inventario.router)
 app.include_router(reservas.router)
 app.include_router(pedidos.router)

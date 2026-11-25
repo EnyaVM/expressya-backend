@@ -118,20 +118,30 @@ def cancelar_pedido_cliente(
 
         cur.execute(
             """
-            SELECT linea_id, producto_id, q, s, k
+            SELECT linea_id, producto_id, q, s, k, estado
             FROM linea_pedido
             WHERE pedido_id = %s
-            ORDER BY producto_id
+            ORDER BY linea_id
             FOR UPDATE
             """,
             (pedido_id,),
         )
-        lineas = cur.fetchall()
+        lineas = [fila[:5] for fila in cur.fetchall()]
         if any(s > 0 for _, _, _, s, _ in lineas):
             raise ErrorDeNegocio(
                 409,
                 "PREPARACION_INICIADA",
                 "La preparación del pedido ya inició; el cliente ya no puede cancelarlo.",
+            )
+        cur.execute(
+            "SELECT count(*) FROM linea_pedido WHERE pedido_id = %s AND estado NOT IN ('ASIGNADA', 'CANCELADA')",
+            (pedido_id,),
+        )
+        if cur.fetchone()[0] > 0:
+            raise ErrorDeNegocio(
+                409,
+                "ESTADO_INCOMPATIBLE",
+                "El pedido tiene una línea con un faltante en validación; se resuelve con D-05.",
             )
 
         for linea_id, producto_id, q, s, k in lineas:
@@ -139,9 +149,14 @@ def cancelar_pedido_cliente(
             if pendiente == 0:
                 continue
             cur.execute(
-                "UPDATE linea_pedido SET k = q, estado = 'CANCELADA' WHERE linea_id = %s",
-                (linea_id,),
+                """
+                UPDATE linea_pedido SET k = q, estado = 'CANCELADA'
+                WHERE linea_id = %s AND estado = 'ASIGNADA' AND s + k + %s <= q
+                """,
+                (linea_id, pendiente),
             )
+            if cur.rowcount != 1:
+                raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE", "La línea cambió de estado; intenta de nuevo.")
             _registrar_movimiento_cancelacion(
                 cur,
                 darkstore_id,
@@ -176,6 +191,8 @@ def cancelar_pedido_cliente(
     cuerpo = {
         "pedido_id": str(pedido_id),
         "estado": "CANCELADO",
+        "total_vigente": "0.00",
+        "ajuste_pendiente": reembolso_id is not None,
         "reembolso_id": str(reembolso_id) if reembolso_id else None,
         "monto_reembolso": f"{total_vigente:.2f}",
     }
@@ -359,7 +376,7 @@ def cancelar_pedido_http(
             conn,
             clave=clave,
             operacion="CL-13",
-            objeto="PEDIDO",
+            objeto="pedido",
             objeto_id=pedido_id,
             actor_tipo="CLIENTE",
             huella=huella,

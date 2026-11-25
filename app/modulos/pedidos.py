@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -13,6 +14,7 @@ from app.idempotencia import (
     ejecutar_idempotente,
     validar_clave_operacion,
 )
+from app.modulos.avisos import registrar_aviso
 from app.modulos.reservas import cerrar_si_sigue_activa
 
 
@@ -47,6 +49,9 @@ router = APIRouter(
 
 class SepararCantidadSolicitud(BaseModel):
     cantidad: int = Field(gt=0)
+
+MAXIMO_INTENTOS_EVENTO = 5
+registro_eventos = logging.getLogger("expressya.eventos")
 
 
 def _disparar_reembolso_interno(
@@ -154,7 +159,7 @@ def confirmar_compra(conn, intento_id: UUID) -> UUID | None:
             return None
 
         # 3. Cobro duplicado (ADV-001): el pedido ya está CONFIRMADO con otro intento aplicado
-        if estado_pedido == "CONFIRMADO":
+        if estado_pedido in ("CONFIRMADO", "CANCELADO"):
             return _disparar_reembolso_interno(
                 conn,
                 intento_id=intento_id,
@@ -279,6 +284,21 @@ def confirmar_compra(conn, intento_id: UUID) -> UUID | None:
         )
 
 
+def avisar_eventos_detenidos() -> int:
+    with pool.connection() as conn:
+        detenidos = conn.execute(
+            """
+            SELECT evento_id
+            FROM evento_interno
+            WHERE NOT procesado AND tipo = 'EV-01' AND intentos_procesamiento >= %s
+            """,
+            (MAXIMO_INTENTOS_EVENTO,),
+        ).fetchall()
+        for (evento_id,) in detenidos:
+            registrar_aviso(conn, "EVENTO_SIN_PROCESAR", "EVENTO_INTERNO", evento_id)
+    return len(detenidos)
+
+
 def procesar_eventos_pendientes(limite: int = 50) -> int:
     """
     Consumidor de eventos EV-01. Procesa hasta `limite` eventos en transacciones individuales
@@ -286,7 +306,10 @@ def procesar_eventos_pendientes(limite: int = 50) -> int:
     """
     from app.modulos.pagos import enviar_reembolso
 
+    avisar_eventos_detenidos()
+
     procesados = 0
+    intentados: list[UUID] = []
     for _ in range(limite):
         evento_id: UUID | None = None
         intento_id: UUID | None = None
@@ -300,15 +323,19 @@ def procesar_eventos_pendientes(limite: int = 50) -> int:
                         SELECT evento_id, intento_id
                         FROM evento_interno
                         WHERE NOT procesado AND tipo = 'EV-01'
-                        ORDER BY fecha ASC
+                          AND intentos_procesamiento < %s
+                          AND NOT (evento_id = ANY(%s::uuid[]))
+                        ORDER BY intentos_procesamiento ASC, fecha ASC
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
-                        """
+                        """,
+                        (MAXIMO_INTENTOS_EVENTO, intentados),
                     )
                     fila = cur.fetchone()
                     if fila is None:
                         break
                     evento_id, intento_id = fila
+                    intentados.append(evento_id)
 
             try:
                 with conn.transaction():
@@ -339,6 +366,7 @@ def procesar_eventos_pendientes(limite: int = 50) -> int:
                         )
                         procesados += 1
             except Exception:
+                registro_eventos.exception("Fallo el evento %s", evento_id)
                 with conn.transaction():
                     with conn.cursor() as cur:
                         cur.execute(
@@ -346,9 +374,12 @@ def procesar_eventos_pendientes(limite: int = 50) -> int:
                             UPDATE evento_interno
                             SET intentos_procesamiento = intentos_procesamiento + 1
                             WHERE evento_id = %s
+                            RETURNING intentos_procesamiento
                             """,
                             (evento_id,),
                         )
+                        if cur.fetchone()[0] >= MAXIMO_INTENTOS_EVENTO:
+                            registrar_aviso(conn, "EVENTO_SIN_PROCESAR", "EVENTO_INTERNO", evento_id)
                 continue
 
         if reembolso_a_enviar is not None:
