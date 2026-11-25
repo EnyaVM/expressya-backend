@@ -213,3 +213,32 @@ def test_solo_administracion_cambia_la_pasarela_de_prueba():
         assert admin.post("/simulador/modo", json={"cobro": "OTRO"}).status_code == 400
     finally:
         admin.post("/simulador/modo", json={"cobro": "APROBAR", "reembolso": "CONFIRMAR"})
+
+
+def test_la_cookie_de_sesion_es_httponly_y_estricta():
+    _, respuesta = entrar(cuenta("CLIENTE"), "cliente")
+    galleta = respuesta.headers["set-cookie"].lower()
+    assert "httponly" in galleta and "samesite=strict" in galleta
+
+
+def test_administracion_lista_las_cuentas_con_sus_perfiles():
+    tienda, _ = tienda_con_productos(1)
+    usuario = cuenta("INTERNO", [(tienda, "INSPECTOR")])
+    admin = sesion(cuenta("ADMINISTRADOR"), "interno")
+
+    cuentas = {c["usuario"]: c for c in admin.get("/v1/admin/cuentas").json()}
+
+    assert [a["rol"] for a in cuentas[usuario]["asignaciones"]] == ["INSPECTOR"]
+
+
+def test_reactivar_una_cuenta_no_revive_sus_sesiones_anteriores():
+    usuario = cuenta("CLIENTE")
+    cliente = sesion(usuario, "cliente")
+    admin = sesion(cuenta("ADMINISTRADOR"), "interno")
+    cuenta_id = cliente.get("/v1/auth/me").json()["cuenta_id"]
+
+    admin.patch(f"/v1/admin/cuentas/{cuenta_id}", json={"activo": False})
+    admin.patch(f"/v1/admin/cuentas/{cuenta_id}", json={"activo": True})
+
+    assert cliente.get("/v1/auth/me").status_code == 401
+    assert entrar(usuario, "cliente")[1].status_code == 200

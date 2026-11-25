@@ -3,6 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
 
 from app.db import pool
@@ -72,6 +73,18 @@ app.include_router(pasarela_simulada.router)
 app.include_router(cancelaciones.router)
 app.include_router(faltantes.router)
 app.include_router(danos.router)
+
+
+def esquema_con_sesion():
+    if app.openapi_schema is None:
+        esquema = get_openapi(title=app.title, version="1.1.0", routes=app.routes)
+        esquema["components"]["securitySchemes"] = {"sesion": {"type": "http", "scheme": "bearer"}}
+        esquema["security"] = [{"sesion": []}]
+        app.openapi_schema = esquema
+    return app.openapi_schema
+
+
+app.openapi = esquema_con_sesion
 
 
 @app.get("/v1/salud")

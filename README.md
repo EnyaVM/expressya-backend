@@ -4,22 +4,25 @@ Backend de ExpressYa con el stack del SDD v1.1: Python 3.12, FastAPI, psycopg 3,
 
 ## Interfaz para la demostración
 
-En esta Mac, abre Docker Desktop y ejecuta **Iniciar ExpressYa.command** con doble clic. Abre **http://127.0.0.1:8001** y deja la terminal encendida durante la demostración. El lanzador utiliza el contenedor `expressya-db` de la instalación descrita abajo y crea una base separada, `expressya_demo_20261123`; al volver a abrirlo conserva los pedidos y movimientos. No reconstruye ni borra la base de trabajo del equipo.
+En la Mac, abre Docker Desktop y ejecuta **Iniciar ExpressYa.command** con doble clic. Abre **http://127.0.0.1:8001** (tienda) o **http://127.0.0.1:8001/interno/** (personal) y deja la terminal encendida.
 
-La interfaz usa las operaciones del backend y persiste los resultados en PostgreSQL:
+Cada vez que se abre, el lanzador:
+1. Crea la base de la demo `expressya_demo_20261123` si no existe; si existe, conserva pedidos y movimientos.
+2. Aplica los archivos nuevos de `db/` una sola vez (lleva el registro en `expressya.archivo_cargado`) y sincroniza el catálogo de `db/91_catalogo_c1.sql`. **Para cambiar un precio basta con editarlo ahí y volver a abrir la demo.**
+3. Crea las cuentas de la demo que falten y guarda sus contraseñas en `cuentas_demo.txt` (ese archivo no se sube a GitHub).
 
-- **Tienda:** catálogo por tienda, bolsa, reserva de cinco minutos, pago y liberación de reserva.
-- **Mis pedidos:** seguimiento, cancelación, devoluciones y avisos. Una cancelación después de iniciar la preparación recibe el rechazo del servidor.
-- **Operación:** inventario e historial, separación con el rol Picker (CL-08), verificación de pagos/reembolsos con evidencia y reintento de devolución con el rol Responsable.
-- **Controles de prueba:** aprobar, rechazar o dejar sin respuesta a la pasarela; crear otro cliente; consultar solicitudes y recuperar una operación sin respuesta conservando su clave. Los modos de pasarela afectan a todos los clientes de esta instancia.
+| Cuenta | Portal | Puede |
+|---|---|---|
+| `cliente.demo` (o cualquier cuenta creada con «Crear cuenta») | Tienda | Reservar, pagar, liberar, cancelar y ver solo sus pedidos |
+| `picker.norte` | Interno | Separar (CL-08), contar (CL-09) y reportar faltantes (CL-10) en Dark Store Norte |
+| `personal.norte` | Interno | Reportar faltantes (CL-10) y daños (CL-14) |
+| `supervisor.norte` | Interno | Contar y resolver discrepancias con D-05 (CL-12) |
+| `inspector.norte` / `autorizador.norte` | Interno | Inspeccionar daños y autorizar reincorporación o desecho (CL-15), siempre dos personas distintas |
+| `responsable.norte` | Interno | Verificar pagos y reembolsos con evidencia (CL-06) y reintentar reembolsos (CL-17) |
+| `picker.sur` | Interno | Igual que el picker, pero solo en Dark Store Sur (sirve para mostrar que no ve Norte) |
+| `admin` | Interno | Ver todas las tiendas, dar de alta cuentas y perfiles, activar o desactivar accesos, ver la auditoría y configurar la pasarela de prueba. **No opera** pedidos ni inventario |
 
-Los pagos utilizan la pasarela de prueba del proyecto y no hacen cargos reales. La identidad por encabezados pertenece al prototipo: el selector de personal y el alta de clientes requieren `EXPRESSYA_DEMO=1`. El lanzador escucha únicamente en esta computadora. La sesión de cliente pertenece a la pestaña; al cerrarla se puede perder el acceso directo a sus pedidos, que siguen guardados y consultables desde Operación.
-
-**Alcance pendiente:** conteo físico (CL-09), reporte de faltante (CL-10) y resolución (CL-12) no tienen rutas implementadas en la versión integrada de `main` (`a8f3d66`, PR #9 de Mauricio). La interfaz identifica estos pendientes y no inventa resultados. Los escenarios automatizados de faltantes no equivalen a una implementación operable de estas rutas.
-
-Se integraron las correcciones de robustez recibidas de Claude, resolviendo el cruce con CL-08. La espera por solicitudes concurrentes de la misma clave queda documentada como propuesta en la sección de idempotencia. Esta integración no implica que los cambios locales ya estén publicados en GitHub.
-
-Validación de esta entrega: **125 pruebas automatizadas aprobadas** en una base exclusiva de pruebas, además de comprobaciones desde la interfaz de compra, pago, devolución, verificación manual y separación. `tests/test_portal.py` comprueba los permisos de consulta, la ocultación de saldos al cliente, la separación real CL-08 seguida del bloqueo de cancelación y los avisos de devolución.
+Los pagos usan la pasarela de prueba del proyecto y no hacen cargos reales. La identidad sale de la sesión del servidor: la página ya no manda `Cliente-Id` ni `Usuario-Id`, y si alguien los inventa se descartan (ver sección 9).
 
 ## Qué necesitas instalar (una sola vez)
 
@@ -35,27 +38,17 @@ En la Terminal, dentro de esta carpeta:
 docker run --name expressya-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=expressya_db -p 5432:5432 -d postgres:16
 ```
 
-Espera unos segundos y carga los archivos de `db/` en orden (01, 02, 03, 90, 91, 92, 93):
+Espera unos segundos, prepara Python (paso 2) y carga todos los archivos de `db/` en orden:
 
 ```bash
-docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/01_modelo_fisico_expressya.sql
-docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/02_precio_producto.sql
-docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/03_clave_intento_pago.sql
-docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/90_datos_prueba.sql
-docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/91_datos_c1.sql
-docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/92_datos_c2.sql
-docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/93_datos_c3.sql
+python scripts/reconstruir_base.py
 ```
 
-Con eso quedan 5 Dark Stores, 5 productos de ropa con precio y 25 filas de inventario, cada una con su movimiento inicial.
+Con eso quedan 5 Dark Stores, 5 productos de ropa con precio, el inventario inicial con su movimiento, los usuarios de prueba y las tablas de cuentas. Para crear las cuentas de la demo en esta base: `python -m scripts.crear_cuentas_demo`.
 
 Para apagarla: `docker stop expressya-db`. Para volver a prenderla: `docker start expressya-db`.
 
-Para empezar de cero, borra el esquema y vuelve a cargar los cuatro archivos:
-
-```bash
-docker exec expressya-db psql -U postgres -d expressya_db -c "DROP SCHEMA IF EXISTS expressya CASCADE"
-```
+Para empezar de cero, vuelve a ejecutar `python scripts/reconstruir_base.py`: borra el esquema y carga todo otra vez.
 
 ## 2. Preparar Python
 
@@ -77,9 +70,9 @@ uvicorn app.main:app --reload
 - Documentación automática de la API (Swagger): http://localhost:8000/docs
 - Prueba de conexión con la base: http://localhost:8000/v1/salud
 
-En la página, escribe la tienda `11111111-1111-1111-1111-111111111111` y el producto `22222222-2222-2222-2222-222222222222` (Playera básica negra M, 3 unidades: disponible) o `33333333-3333-3333-3333-333333333333` (Jeans slim azul 32, 0 unidades: agotado).
+Entra con una cuenta creada con `python -m scripts.crear_cuentas_demo` (ver «Interfaz para la demostración»). En Swagger, haz `POST /v1/auth/login` con `"entregar_token": true` y usa el token como `Authorization: Bearer ...`.
 
-Al arrancar, la aplicación inicia un proceso que cada 5 segundos expira las reservas cuyo plazo de 300 s ya se cumplió,procesan eventos internos EV-01 pendientes y recuperan intentos de pago huérfanos en estado INICIADO.
+Al arrancar, la aplicación inicia un proceso que cada 5 segundos expira las reservas cuyo plazo de 300 s ya se cumplió, procesa eventos internos EV-01 pendientes y recuperan intentos de pago huérfanos en estado INICIADO.
 
 ## 4. Correr las pruebas
 
@@ -89,7 +82,15 @@ Con la base prendida:
 python -m pytest -q
 ```
 
-Las pruebas crean sus propias tiendas, productos y clientes, así que se pueden repetir sin limpiar nada (el historial de movimientos es de solo inserción y no se borra).
+Las pruebas crean sus propias tiendas, productos y clientes, así que se pueden repetir sin limpiar nada (el historial de movimientos es de solo inserción y no se borra). `tests/conftest.py` activa `EXPRESSYA_ENCABEZADOS_DE_PRUEBA=1` para que las pruebas de contratos puedan mandar `Cliente-Id` y `Usuario-Id`; las pruebas de `tests/test_cuentas.py` lo apagan y comprueban que, fuera de pruebas, solo cuenta la sesión.
+
+Para generar la matriz de trazabilidad con el resultado de esta misma corrida, el commit y las versiones:
+
+```bash
+python -m scripts.evidencia_final
+```
+
+Escribe `docs/matriz_trazabilidad.md` y `evidencia/junit_final.xml`.
 
 ## 5. Evidencia del desafío C1
 
@@ -246,11 +247,11 @@ Ruta de cada operación (cabeceras `Clave-Operacion` y `Usuario-Id`; repetir la 
 | Historial: quién, qué, cuándo, por qué y cómo afectó al pedido | `test_la_resolucion_queda_en_el_historial_con_quien_la_autorizo`; `v_reconstruccion_saldos` cuadra en cada prueba (`historial_cuadra`) | `tests/test_cl12_resolucion.py` |
 | Perfiles por tienda (RBAC) | `test_sin_rol_de_conteo_en_la_tienda_responde_403`, `test_personal_de_tienda_puede_reportar_y_responsable_no`, `test_solo_el_supervisor_de_la_tienda_resuelve` | los tres archivos de C3 |
 
-Demo por Swagger (`/docs`) en Dark Store Sur (`11111111-1111-1111-1111-111111111112`) con la playera (`22222222-2222-2222-2222-222222222222`, E = 10):
-1. Checkout de 3 unidades con cualquier `Cliente-Id`: `E=10 R=3 D=7`.
-2. Conteo de 8 con el picker `44444444-4444-4444-4444-444444444444`: `E=8 N=2 D=5` y discrepancia `EN_VALIDACION`.
-3. Resolución con el supervisor `88888888-8888-8888-8888-888888888888` y `unidades_validadas = 9`: `E=9 N=0 D=6`.
-4. El historial del producto en la pantalla de Operación muestra el ajuste inicial, la reserva, la discrepancia (`en_revision`, quién contó) y la resolución (`ajuste_conteo`, quién autorizó).
+Demo desde la página en Dark Store Norte, con la Sudadera (E = 10):
+1. `cliente.demo` reserva 3 unidades: `E=10 R=3 D=7`.
+2. `picker.norte` registra un conteo de 8 en «Conteos y discrepancias»: `E=8 N=2 D=5` y discrepancia `EN_VALIDACION`.
+3. `supervisor.norte` resuelve con `unidades_validadas = 9`: `E=9 N=0 D=6`.
+4. «Ver movimientos» del producto muestra el ajuste inicial, la reserva, la discrepancia (`en_revision`, quién contó) y la resolución (`ajuste_conteo`, quién autorizó).
 
 Decisiones `PROPUESTA` del equipo (trazadas a D-05, P4 y P8):
 - **Unidades en revisión:** si el conteo es menor que E, la diferencia pasa de E a N «en revisión» (P4, P8); si además no cubre reservas y compromisos, el producto se bloquea, las líneas pagadas pasan a `NO_SURTIBLE` y se retira de las reservas activas (D-05 pasos 1 y 2).
@@ -261,6 +262,36 @@ Decisiones `PROPUESTA` del equipo (trazadas a D-05, P4 y P8):
 - **Rol de resolución:** `SUPERVISOR` (OpenAPI x-roles; rol candidato pendiente de validación).
 
 - **Producto retirado durante el pago:** si CL-11 retira un producto de una reserva cuyo pago ya inició, al confirmarse el cobro (CL-07) se genera un reembolso por cada línea retirada (`PRODUCTO_RETIRADO`, con `reserva_origen_id` y `producto_origen_id`); lo cobrado menos lo reembolsado es igual al nuevo total. Si se retiran todas las líneas, se reembolsa el 100 %. Pruebas: `tests/test_cl11_sobrecobro.py`.
+
+## 9. Cuentas, inicio de sesión y permisos
+
+| Ruta | Quién | Qué hace |
+|---|---|---|
+| `POST /v1/auth/registro` | Cualquiera | Crea una cuenta de cliente (usuario en minúsculas, contraseña de 8 a 128 caracteres) |
+| `POST /v1/auth/login` `{usuario, clave, portal}` | Cualquiera | Abre una sesión de 8 h. Responde el perfil y un token CSRF; la sesión va en una cookie HttpOnly. Con `entregar_token: true` devuelve un token Bearer para la API |
+| `POST /v1/auth/logout`, `GET /v1/auth/me` | Con sesión | Cierra la sesión o devuelve la cuenta, sus perfiles y su token CSRF |
+| `GET/POST /v1/admin/cuentas`, `PATCH /v1/admin/cuentas/{id}`, `GET /v1/admin/auditoria` | Administración | Lista y da de alta cuentas con perfiles por tienda, activa o desactiva accesos (desactivar cierra sus sesiones) y consulta la auditoría |
+
+Reglas (`app/seguridad.py`, una sola frontera):
+- Las contraseñas se guardan con scrypt y sal; los tokens de sesión solo como SHA-256.
+- Un usuario inexistente y una contraseña incorrecta responden igual (401).
+- Cada cuenta entra solo a su portal: clientes a la tienda; personal y administración al interno.
+- Toda operación que cambia algo con cookie exige el encabezado `X-CSRF-Token`.
+- La identidad (`Cliente-Id` o `Usuario-Id`) la pone el servidor a partir de la sesión; lo que mande el navegador se descarta.
+- Administración consulta todo, pero el servidor rechaza con 403 cualquier operación de pedidos, pagos o inventario hecha por ella.
+- Los perfiles por tienda salen de `asignacion_rol` (RNF-06), igual que antes.
+
+## 10. Evidencia del desafío C4
+
+| Pide el desafío | Dónde está |
+|---|---|
+| Flujos de principio a fin | `tests/test_e2e_c4.py` y el recorrido en navegador de la sección «Interfaz para la demostración» |
+| Matriz Requisito → Diseño → Código → Prueba → Resultado (18 casos, todos automatizados) | `docs/matriz_trazabilidad.md`, generada con `python -m scripts.evidencia_final` |
+| Defectos, corrección y regresión | `docs/defectos_y_regresiones.md` |
+| Decisión de IA aceptada, modificada y rechazada | `docs/defensa_ia.md` |
+| Anexo de cambios respecto de la Semana 3, ADR y lo no implementado | `docs/anexo_cambios_semana3.md` |
+| Calidad del código (ub-mode: CRAP, duplicación y mutación) | `docs/bitacora_ub_mode.md` |
+| CL-14 y CL-15: daño, inspección y reincorporación o desecho | `app/modulos/danos.py`, `tests/test_cl14_cl15_danos.py` |
 
 ## Estructura
 
@@ -278,9 +309,16 @@ app/
     pasarela_simulada.py simulador controlable de la pasarela
     cancelaciones.py     M03 Cancelaciones: CL-13 del cliente y cancelación por faltante tras CL-12
     faltantes.py         M01 y M05: CL-09 conteo, CL-10 faltante, CL-11 retiro de reservas y CL-12 resolución (D-05)
+    danos.py             M01: CL-14 daño, CL-15 inspección y reincorporación o desecho
     avisos.py            M06 Avisos: CL-18 con clave estable por origen
+    cuentas.py           registro, inicio de sesión, cuentas, perfiles y auditoría
+    portal.py            consultas de la página (catálogo, pedidos, operación y pendientes por tienda)
+  seguridad.py           frontera de identidad: sesiones, CSRF, contraseñas y permisos de administración
 static/
-  index.html             la página del cliente
+  index.html             portal de clientes (tienda, bolsa, pedidos)
+  interno/index.html     portal interno (operación por perfil, cuentas y auditoría)
+  js/comun.js            sesión, llamadas a la API y recuperación de operaciones sin respuesta
+  js/app.js              vistas y formularios de ambos portales
 tests/
   escenarios.py          ayudantes: tiendas, productos y clientes nuevos, reservas vencidas, reconstrucción
   test_inicio.py         pruebas de arranque y de CL-01
@@ -302,15 +340,29 @@ tests/
   test_preparar_demo.py  la demo aplica precios y archivos nuevos de db/ sin borrar pedidos
   test_cl12_resolucion.py CL-12: ajuste, D-05 por fecha de compromiso, cancelación parcial y reembolso
   test_at02_limite_300s.py AT-02: vigente a los 299 s y vencida a los 300 s
+  test_cl14_cl15_danos.py CL-14 y CL-15: daño, déficit, inspección y dos personas
+  test_cuentas.py        sesiones, CSRF, suplantación, portales, administración y auditoría
+  test_reembolsos_en_cola.py reembolsos en cola, notificaciones incongruentes y reintento por interbloqueo
+  test_ciclos.py         ciclos de fondo: un fallo no tumba el servidor
+  conftest.py            activa las cabeceras de identidad solo para las pruebas
 db/
   01_modelo_fisico_expressya.sql DDL del SDD v1.1 (no se edita)
   02_precio_producto.sql         agrega el precio unitario al producto
   03_clave_intento_pago.sql      guarda la Clave-Operacion en el intento antes de cobrar (PROPUESTA)
+  04_cuentas_y_sesiones.sql      cuentas, sesiones y auditoría de accesos (PROPUESTA)
   90_datos_prueba.sql            datos semilla
-  91_datos_c1.sql                5 tiendas, productos de ropa e inventario inicial
+  91_catalogo_c1.sql             productos de ropa y sus precios (se pueden editar; la demo los sincroniza)
+  91_datos_c1.sql                5 tiendas e inventario inicial
   92_datos_c2.sql                usuario operativo de prueba con rol RESPONSABLE
   93_datos_c3.sql                supervisor y personal de tienda de prueba en las 5 tiendas
+docs/
+  matriz_trazabilidad.md         matriz de 18 casos con el resultado de la última corrida
+  defectos_y_regresiones.md      defectos, causa, corrección y prueba de regresión
+  defensa_ia.md                  decisiones de IA aceptada, modificada y rechazada
+  anexo_cambios_semana3.md       cambios respecto del diseño, ADR de construcción y lo no implementado
+  bitacora_ub_mode.md            bitácora de calidad (CRAP, duplicación, mutación)
 evidencia/
+  junit_final.xml                resultado de la última corrida de evidencia_final
   c1_resultados.txt              log reproducible de las pruebas de C1
   c2_resultados.txt              log reproducible de las pruebas de C2
 .github/
@@ -320,6 +372,9 @@ evidencia/
 scripts/
   evidencia_c1.sh                genera evidencia/c1_resultados.txt
   reconstruir_base.py            reconstruye el esquema expressya cargando todos los SQL en orden
+  preparar_demo.py               prepara la base de la demo sin borrar pedidos y aplica lo nuevo de db/
+  crear_cuentas_demo.py          crea las cuentas de la demo y guarda sus claves en cuentas_demo.txt
+  evidencia_final.py             corre la suite y genera docs/matriz_trazabilidad.md
   evidencia_c2.py                corre todas las pruebas y 20 repeticiones de carrera; guarda evidencia/c2_resultados.txt
   preparar_github.sh             crea etiquetas, hitos e issues de C1 y C2 (solo el PM, una vez)
 CONTRIBUTING.md                  reglas del equipo para trabajar en GitHub

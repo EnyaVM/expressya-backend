@@ -1,5 +1,3 @@
-import hashlib
-import json
 from collections.abc import Callable
 from typing import Literal
 from uuid import UUID, uuid4
@@ -11,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.db import pool
 from app.errores import ErrorDeNegocio, RutaReserva
-from app.idempotencia import clave_tomada_por_un_pago
+from app.idempotencia import calcular_huella, clave_tomada_por_un_pago
 
 router = APIRouter(prefix="/v1", tags=["M02 Reservas"], route_class=RutaReserva)
 
@@ -68,10 +66,7 @@ def verificar_disponibilidad(conn, darkstore_id: UUID, lineas: list[LineaSolicit
 def cerrar_si_sigue_activa(conn, reserva_id: UUID, estado: str, motivo_cierre: str, tipo_movimiento: str,
                            motivo_movimiento: str, solo_si_vencida: bool = False,
                            clave_operacion: UUID | None = None) -> bool:
-    fila = conn.execute("SELECT pedido_id FROM reserva WHERE reserva_id = %s", (reserva_id,)).fetchone()
-    if fila is None:
-        return False
-    pedido_id = fila[0]
+    pedido_id = conn.execute("SELECT pedido_id FROM reserva WHERE reserva_id = %s", (reserva_id,)).fetchone()[0]
 
     conn.execute("SELECT 1 FROM pedido WHERE pedido_id = %s FOR UPDATE", (pedido_id,))
 
@@ -253,9 +248,7 @@ def crear_checkout(conn, cliente_id: UUID, darkstore_id: UUID, lineas: list[Line
 
 
 def _huella_reserva(operacion: str, cliente_id: UUID, reserva_id: UUID | None, solicitud: BaseModel) -> bytes:
-    peticion = {"operacion": operacion, "cliente_id": str(cliente_id),
-                "reserva_id": str(reserva_id) if reserva_id else None, "cuerpo": solicitud.model_dump(mode="json")}
-    return hashlib.sha256(json.dumps(peticion, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).digest()
+    return calcular_huella(operacion, reserva_id, {"cliente_id": str(cliente_id), "cuerpo": solicitud.model_dump(mode="json")})
 
 
 def _respuesta_conservada(conn, clave: UUID, huella: bytes) -> JSONResponse | None:

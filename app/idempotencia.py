@@ -44,7 +44,6 @@ def calcular_huella(operacion: str, objeto_id: Any, cuerpo: dict[str, Any]) -> b
         },
         sort_keys=True,
         separators=(",", ":"),
-        ensure_ascii=False,
     )
     return hashlib.sha256(canonico.encode("utf-8")).digest()
 

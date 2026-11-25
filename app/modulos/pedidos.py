@@ -146,7 +146,7 @@ def _confirmar_a_tiempo(conn, intento_id: UUID, d: dict) -> bool:
 def _reembolsar_pago_tardio(conn, intento_id: UUID, d: dict) -> UUID | None:
     if d["estado_reserva"] == "ACTIVA":
         cerrar_si_sigue_activa(conn, d["reserva_id"], "EXPIRADA", "VENCIMIENTO", "EXPIRACION",
-                               "Vencimiento de la reserva (300 s)", solo_si_vencida=True)
+                               "Vencimiento de la reserva (300 s)")
     conn.execute("UPDATE pedido SET estado = 'SIN_COMPRA', ajuste_pendiente = true WHERE pedido_id = %s", (d["pedido_id"],))
     motivo = "PRODUCTO_RETIRADO" if d["motivo_cierre"] == "FALTANTE" else "PAGO_TARDIO"
     return _disparar_reembolso_interno(conn, intento_id=intento_id, monto=d["monto"], motivo=motivo)
@@ -249,16 +249,9 @@ def procesar_eventos_pendientes(limite: int = 50) -> int:
                 with conn.transaction():
                     with conn.cursor() as cur:
                         cur.execute(
-                            """
-                            UPDATE evento_interno
-                            SET intentos_procesamiento = intentos_procesamiento + 1
-                            WHERE evento_id = %s
-                            RETURNING intentos_procesamiento
-                            """,
+                            "UPDATE evento_interno SET intentos_procesamiento = intentos_procesamiento + 1 WHERE evento_id = %s",
                             (evento_id,),
                         )
-                        if cur.fetchone()[0] >= MAXIMO_INTENTOS_EVENTO:
-                            registrar_aviso(conn, "EVENTO_SIN_PROCESAR", "EVENTO_INTERNO", evento_id)
                 continue
 
         if reembolso_a_enviar is not None:

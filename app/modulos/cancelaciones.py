@@ -126,8 +126,8 @@ def cancelar_pedido_cliente(conn, pedido_id: UUID, cliente_id: UUID, motivo: str
             _registrar_movimiento_cancelacion(cur, darkstore_id, producto_id, q - k, f"Cancelación del cliente: {motivo}",
                                               clave_operacion, reserva_id, linea_id)
         cur.execute("UPDATE pedido SET estado = 'CANCELADO', total_vigente = 0 WHERE pedido_id = %s", (pedido_id,))
-        por_enviar = solicitar_reembolso(conn, intento_id, total, "CANCELACION_CLIENTE") if total > 0 else None
-        reembolso_id = _reembolso_total_de(cur, intento_id) if total > 0 else None
+        por_enviar = solicitar_reembolso(conn, intento_id, total, "CANCELACION_CLIENTE")
+        reembolso_id = _reembolso_total_de(cur, intento_id)
         registrar_aviso(conn, tipo="PEDIDO_CANCELADO", origen_tipo="PEDIDO", origen_id=pedido_id,
                         cliente_id=cliente_id, pedido_id=pedido_id)
     return _respuesta_cancelacion(pedido_id, total, reembolso_id), por_enviar
@@ -164,8 +164,6 @@ def _restar_de_la_linea(cur, linea_id: UUID, darkstore_id: UUID, cantidad: int) 
     _bloquear_inventario(cur, darkstore_id, [producto_id])
     cur.execute("SELECT q, s, k, precio_unitario, estado FROM linea_pedido WHERE linea_id = %s FOR UPDATE", (linea_id,))
     q, s, k, precio, estado = cur.fetchone()
-    if cantidad > q - s - k:
-        raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE", "La línea no tiene suficientes unidades pendientes para cancelar.")
     cur.execute("UPDATE linea_pedido SET k = %s, estado = %s WHERE linea_id = %s",
                 (k + cantidad, estado_tras_cancelar(q, s, k + cantidad, estado), linea_id))
     return producto_id, (Decimal(precio) * cantidad).quantize(Decimal("0.01"))

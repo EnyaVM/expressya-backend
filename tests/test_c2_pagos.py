@@ -252,3 +252,10 @@ def test_carrera_dos_pagos_a_la_vez_solo_uno_inicia(num_hilos):
     assert len(conflictos) == num_hilos - 1
     for c in conflictos:
         assert c.json()["codigo"] == "INTENTO_ABIERTO"
+
+def test_cada_respuesta_de_la_pasarela_simulada_trae_su_propia_referencia():
+    from uuid import uuid4 as nuevo
+
+    primera = pasarela_simulada.cobrar(nuevo(), "1.00")[1]
+    segunda = pasarela_simulada.cobrar(nuevo(), "1.00")[1]
+    assert primera != segunda
