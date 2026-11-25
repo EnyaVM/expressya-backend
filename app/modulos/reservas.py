@@ -252,64 +252,59 @@ def crear_checkout(conn, cliente_id: UUID, darkstore_id: UUID, lineas: list[Line
     }
 
 
-def _responder_operacion_reserva(conn, operacion: str, clave: UUID, cliente_id: UUID,
-                                reserva_id: UUID | None, solicitud: BaseModel, estado_http: int,
-                                ejecutar: Callable[[], dict]) -> JSONResponse:
-    peticion = {
-        "operacion": operacion, "cliente_id": str(cliente_id),
-        "reserva_id": str(reserva_id) if reserva_id else None, "cuerpo": solicitud.model_dump(mode="json"),
-    }
-    canonica = json.dumps(peticion, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    huella = hashlib.sha256(canonica.encode("utf-8")).digest()
+def _huella_reserva(operacion: str, cliente_id: UUID, reserva_id: UUID | None, solicitud: BaseModel) -> bytes:
+    peticion = {"operacion": operacion, "cliente_id": str(cliente_id),
+                "reserva_id": str(reserva_id) if reserva_id else None, "cuerpo": solicitud.model_dump(mode="json")}
+    return hashlib.sha256(json.dumps(peticion, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).digest()
+
+
+def _respuesta_conservada(conn, clave: UUID, huella: bytes) -> JSONResponse | None:
     conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 0))", (clave,))
-    previo = conn.execute(
-        "SELECT huella_solicitud, respuesta FROM registro_operacion WHERE clave_operacion = %s", (clave,)
-    ).fetchone()
-    if previo:
-        if previo[0] != huella:
-            raise ErrorDeNegocio(409, "CONFLICTO_DE_CLAVE", "La clave pertenece a otra solicitud")
-        return JSONResponse(previo[1]["cuerpo"], status_code=previo[1]["estado_http"],
-                            headers={"Resultado-Previo": "true"})
+    previo = conn.execute("SELECT huella_solicitud, respuesta FROM registro_operacion WHERE clave_operacion = %s",
+                          (clave,)).fetchone()
+    if previo is None:
+        if conn.execute("SELECT 1 FROM movimiento_inventario WHERE clave_operacion = %s LIMIT 1", (clave,)).fetchone():
+            raise ErrorDeNegocio(409, "CONFLICTO_DE_CLAVE", "La clave ya tiene movimientos sin respuesta conservada")
+        if clave_tomada_por_un_pago(conn, clave):
+            raise ErrorDeNegocio(409, "CONFLICTO_DE_CLAVE", "La clave ya fue utilizada por un pago")
+        return None
+    if previo[0] != huella:
+        raise ErrorDeNegocio(409, "CONFLICTO_DE_CLAVE", "La clave pertenece a otra solicitud")
+    return JSONResponse(previo[1]["cuerpo"], status_code=previo[1]["estado_http"], headers={"Resultado-Previo": "true"})
 
-    # En C1 anterior solo se conservaba la clave en los movimientos de inventario.
-    usada = conn.execute(
-        "SELECT 1 FROM movimiento_inventario WHERE clave_operacion = %s LIMIT 1", (clave,)
-    ).fetchone()
-    if usada:
-        raise ErrorDeNegocio(409, "CONFLICTO_DE_CLAVE", "La clave ya tiene movimientos sin respuesta conservada")
-    if clave_tomada_por_un_pago(conn, clave):
-        raise ErrorDeNegocio(409, "CONFLICTO_DE_CLAVE", "La clave ya fue utilizada por un pago")
 
-    motivo_rechazo = None
-    anterior = {}
-    resultante = {}
-    objeto = "reserva" if reserva_id else "cliente"
-    objeto_id = reserva_id or cliente_id
+def _ejecutar_reserva(conn, operacion: str, ejecutar: Callable[[], dict], estado_http: int, objeto_id: UUID) -> dict:
+    objeto = "reserva" if operacion == "CL-03" else "cliente"
     try:
         with conn.transaction():
             cuerpo = ejecutar()
     except ErrorDeNegocio as error:
         if error.estado_http == 401:
             raise
-        estado_http = error.estado_http
-        cuerpo = error.cuerpo()
-        motivo_rechazo = error.codigo
-    else:
-        reserva = cuerpo["reserva"] if operacion == "CL-02" else cuerpo
-        objeto, objeto_id = "reserva", reserva["reserva_id"]
-        anterior = {"estado": "ACTIVA"} if operacion == "CL-03" else {}
-        resultante = {"estado": reserva["estado"]}
+        return {"estado_http": error.estado_http, "cuerpo": error.cuerpo(), "motivo": error.codigo,
+                "objeto": objeto, "objeto_id": objeto_id, "anterior": {}, "resultante": {}}
+    reserva = cuerpo["reserva"] if operacion == "CL-02" else cuerpo
+    return {"estado_http": estado_http, "cuerpo": cuerpo, "motivo": None, "objeto": "reserva",
+            "objeto_id": reserva["reserva_id"], "anterior": {"estado": "ACTIVA"} if operacion == "CL-03" else {},
+            "resultante": {"estado": reserva["estado"]}}
 
+
+def _responder_operacion_reserva(conn, operacion: str, clave: UUID, cliente_id: UUID,
+                                reserva_id: UUID | None, solicitud: BaseModel, estado_http: int,
+                                ejecutar: Callable[[], dict]) -> JSONResponse:
+    huella = _huella_reserva(operacion, cliente_id, reserva_id, solicitud)
+    conservada = _respuesta_conservada(conn, clave, huella)
+    if conservada is not None:
+        return conservada
+    r = _ejecutar_reserva(conn, operacion, ejecutar, estado_http, reserva_id or cliente_id)
     conn.execute(
-        "INSERT INTO registro_operacion "
-        "(clave_operacion, operacion, objeto, objeto_id, huella_solicitud, estado_anterior, "
+        "INSERT INTO registro_operacion (clave_operacion, operacion, objeto, objeto_id, huella_solicitud, estado_anterior, "
         "estado_resultante, actor_tipo, resultado, respuesta, motivo_rechazo) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s, 'CLIENTE', %s, %s, %s)",
-        (clave, operacion, objeto, objeto_id, huella, Jsonb(anterior), Jsonb(resultante),
-         "RECHAZADA" if motivo_rechazo else "APLICADA",
-         Jsonb({"estado_http": estado_http, "cuerpo": cuerpo}), motivo_rechazo),
+        (clave, operacion, r["objeto"], r["objeto_id"], huella, Jsonb(r["anterior"]), Jsonb(r["resultante"]),
+         "RECHAZADA" if r["motivo"] else "APLICADA", Jsonb({"estado_http": r["estado_http"], "cuerpo": r["cuerpo"]}), r["motivo"]),
     )
-    return JSONResponse(cuerpo, status_code=estado_http)
+    return JSONResponse(r["cuerpo"], status_code=r["estado_http"])
 
 
 def leer_clave_operacion(clave: UUID = Header(alias="Clave-Operacion")) -> UUID:
