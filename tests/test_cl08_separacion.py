@@ -392,3 +392,13 @@ def test_cl08_registra_movimiento_auditable():
         ("C", -2),
         ("E", -2),
     ]
+
+
+def test_cl08_responde_en_la_ruta_del_contrato_openapi():
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    rutas = {r.path for r in app.routes}
+    assert "/v1/lineas-pedido/{linea_id}/separaciones" in rutas
+    assert "/v1/lineas-pedido/{linea_id}/separaciones" in TestClient(app).get("/openapi.json").json()["paths"]

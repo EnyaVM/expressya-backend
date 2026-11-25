@@ -544,7 +544,8 @@ def separar_cantidad(conn, linea_id: UUID, cantidad: int,
 
 
 
-@router.post("/v1/lineas-pedido/{linea_id}/separacion")
+@router.post("/v1/lineas-pedido/{linea_id}/separaciones")
+@router.post("/v1/lineas-pedido/{linea_id}/separacion", include_in_schema=False)
 def separar_cantidad_http(
     linea_id: UUID,
     cuerpo: SepararCantidadSolicitud,

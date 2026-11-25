@@ -11,7 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from app.errores import ErrorDeNegocio, responder_error_de_negocio, responder_validacion
 from app.modulos import cuentas, portal
 from app.seguridad import Autenticacion
-from app.modulos import cancelaciones, faltantes, inventario, pagos, pasarela_simulada, pedidos, reservas
+from app.modulos import cancelaciones, danos, faltantes, inventario, pagos, pasarela_simulada, pedidos, reservas
 
 SEGUNDOS_ENTRE_REVISIONES = 5
 
@@ -69,6 +69,7 @@ app.include_router(pagos.router)
 app.include_router(pasarela_simulada.router)
 app.include_router(cancelaciones.router)
 app.include_router(faltantes.router)
+app.include_router(danos.router)
 
 
 @app.get("/v1/salud")

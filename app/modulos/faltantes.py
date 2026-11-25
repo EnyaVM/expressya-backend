@@ -81,12 +81,19 @@ def registrar_movimiento(conn, darkstore_id, producto_id, tipo, motivo, usuario_
     return movimiento_id
 
 
-def abrir_discrepancia(conn, darkstore_id, producto_id, tipo, productor, conteo_id=None, reportado_por=None, evidencia=None) -> UUID:
-    origen = "CONTEO" if conteo_id else "REPORTE_PICKER"
+def origen_de(conteo_id, movimiento_dano_id) -> str:
+    if conteo_id:
+        return "CONTEO"
+    return "DANO" if movimiento_dano_id else "REPORTE_PICKER"
+
+
+def abrir_discrepancia(conn, darkstore_id, producto_id, tipo, productor, conteo_id=None, reportado_por=None, evidencia=None,
+                       movimiento_dano_id=None) -> UUID:
     discrepancia_id = conn.execute(
-        "INSERT INTO discrepancia (darkstore_id, producto_id, tipo, origen, conteo_origen_id, reportado_por, reporte_picker_evidencia) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING discrepancia_id",
-        (darkstore_id, producto_id, tipo, origen, conteo_id, reportado_por, evidencia),
+        "INSERT INTO discrepancia (darkstore_id, producto_id, tipo, origen, conteo_origen_id, movimiento_dano_id, "
+        "reportado_por, reporte_picker_evidencia) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING discrepancia_id",
+        (darkstore_id, producto_id, tipo, origen_de(conteo_id, movimiento_dano_id), conteo_id, movimiento_dano_id,
+         reportado_por, evidencia),
     ).fetchone()[0]
     conn.execute(
         "INSERT INTO evento_interno (tipo, productor, discrepancia_id, procesado, procesado_en) "
