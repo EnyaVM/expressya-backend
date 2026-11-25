@@ -48,20 +48,50 @@ def pedidos(cliente_id: UUID | None = Header(default=None, alias='Cliente-Id')):
             WHERE p.cliente_id=%s ORDER BY p.fecha_creacion DESC LIMIT 100''', (cliente_id,))
 
 
-@router.get('/operacion/{tienda}')
-def operacion(tienda: UUID, request: Request, usuario_id: UUID | None = Header(default=None, alias='Usuario-Id')):
-    with pool.connection() as conn:
-        exigir_rol(conn, request, usuario_id, tienda)
-        return {
-            'inventario': filas(conn, '''SELECT v.*,p.nombre,h.e_historial,h.n_historial
+CONSULTAS_OPERACION = {
+    'inventario': '''SELECT v.*,p.nombre,h.e_historial,h.n_historial
                 FROM v_saldos_inventario v JOIN producto p USING(producto_id)
                 JOIN v_reconstruccion_saldos h USING(darkstore_id,producto_id)
-                WHERE v.darkstore_id=%s ORDER BY p.nombre''', (tienda,)),
-            'pedidos': filas(conn, '''SELECT p.pedido_id,p.estado,p.total_vigente::text AS total_vigente,p.fecha_creacion
-                FROM pedido p WHERE darkstore_id=%s ORDER BY fecha_creacion DESC LIMIT 100''', (tienda,)),
-            'discrepancias': filas(conn, '''SELECT d.*,p.nombre FROM discrepancia d JOIN producto p USING(producto_id)
-                WHERE darkstore_id=%s ORDER BY fecha_deteccion DESC LIMIT 100''', (tienda,))
-        }
+                WHERE v.darkstore_id=%s ORDER BY p.nombre''',
+    'pedidos': '''SELECT p.pedido_id,p.estado,p.total_vigente::text AS total_vigente,p.fecha_creacion
+                FROM pedido p WHERE darkstore_id=%s ORDER BY fecha_creacion DESC LIMIT 100''',
+}
+
+CONSULTAS_PENDIENTES = {
+    'conteos': """SELECT c.conteo_id,c.producto_id,p.nombre,c.cantidad_contada,c.e_al_corte,c.fecha_registro
+                FROM conteo_fisico c JOIN producto p USING(producto_id)
+                WHERE c.darkstore_id=%s ORDER BY c.fecha_registro DESC LIMIT 50""",
+    'discrepancias': """SELECT d.discrepancia_id,d.producto_id,p.nombre,d.tipo,d.origen,d.estado,d.fecha_deteccion
+                FROM discrepancia d JOIN producto p USING(producto_id)
+                WHERE d.darkstore_id=%s ORDER BY d.estado DESC,d.fecha_deteccion DESC LIMIT 50""",
+    'danos': """SELECT m.movimiento_id,m.producto_id,p.nombre,s.cantidad,m.motivo,m.fecha,
+                s.cantidad-COALESCE((SELECT SUM(i.cantidad) FROM inspeccion_dano i WHERE i.movimiento_dano_id=m.movimiento_id),0)::int AS por_inspeccionar
+                FROM movimiento_inventario m JOIN movimiento_saldo s ON s.movimiento_id=m.movimiento_id AND s.saldo='N'
+                JOIN producto p ON p.producto_id=m.producto_id
+                WHERE m.darkstore_id=%s AND m.tipo='DANO' ORDER BY m.fecha DESC LIMIT 50""",
+    'inspecciones': """SELECT i.inspeccion_id,i.producto_id,p.nombre,i.cantidad,i.resultado,i.fecha,
+                i.inspeccionado_por,EXISTS(SELECT 1 FROM movimiento_inventario m WHERE m.referencia_inspeccion_id=i.inspeccion_id) AS resuelta
+                FROM inspeccion_dano i JOIN producto p USING(producto_id)
+                WHERE i.darkstore_id=%s ORDER BY i.fecha DESC LIMIT 50""",
+    'avisos': """SELECT a.tipo,a.pedido_id,a.fecha,a.entregado_en FROM aviso a JOIN pedido pe USING(pedido_id)
+                WHERE a.destinatario_tipo='RESPONSABLE' AND pe.darkstore_id=%s ORDER BY a.fecha DESC LIMIT 50""",
+}
+
+
+def consultar_tienda(request, usuario_id, tienda, consultas: dict) -> dict:
+    with pool.connection() as conn:
+        exigir_rol(conn, request, usuario_id, tienda)
+        return {nombre: filas(conn, sql, (tienda,)) for nombre, sql in consultas.items()}
+
+
+@router.get('/operacion/{tienda}')
+def operacion(tienda: UUID, request: Request, usuario_id: UUID | None = Header(default=None, alias='Usuario-Id')):
+    return consultar_tienda(request, usuario_id, tienda, CONSULTAS_OPERACION)
+
+
+@router.get('/pendientes/{tienda}')
+def pendientes(tienda: UUID, request: Request, usuario_id: UUID | None = Header(default=None, alias='Usuario-Id')):
+    return consultar_tienda(request, usuario_id, tienda, CONSULTAS_PENDIENTES)
 
 
 @router.get('/pedido/{pedido}')
@@ -100,28 +130,3 @@ def movimientos(tienda: UUID, producto: UUID, request: Request, usuario_id: UUID
             m.referencia_linea_id,m.referencia_reserva_id,ms.saldo,ms.cantidad
             FROM movimiento_inventario m LEFT JOIN movimiento_saldo ms USING(movimiento_id)
             WHERE m.darkstore_id=%s AND m.producto_id=%s ORDER BY fecha DESC,m.movimiento_id,ms.saldo LIMIT 250''', (tienda,producto))
-
-
-@router.get('/pendientes/{tienda}')
-def pendientes(tienda: UUID, request: Request, usuario_id: UUID | None = Header(default=None, alias='Usuario-Id')):
-    with pool.connection() as conn:
-        exigir_rol(conn, request, usuario_id, tienda)
-        return {
-            'conteos': filas(conn, """SELECT c.conteo_id,c.producto_id,p.nombre,c.cantidad_contada,c.e_al_corte,c.fecha_registro
-                FROM conteo_fisico c JOIN producto p USING(producto_id)
-                WHERE c.darkstore_id=%s ORDER BY c.fecha_registro DESC LIMIT 50""", (tienda,)),
-            'discrepancias': filas(conn, """SELECT d.discrepancia_id,d.producto_id,p.nombre,d.tipo,d.origen,d.estado,d.fecha_deteccion
-                FROM discrepancia d JOIN producto p USING(producto_id)
-                WHERE d.darkstore_id=%s ORDER BY d.estado DESC,d.fecha_deteccion DESC LIMIT 50""", (tienda,)),
-            'danos': filas(conn, """SELECT m.movimiento_id,m.producto_id,p.nombre,s.cantidad,m.motivo,m.fecha,
-                s.cantidad-COALESCE((SELECT SUM(i.cantidad) FROM inspeccion_dano i WHERE i.movimiento_dano_id=m.movimiento_id),0)::int AS por_inspeccionar
-                FROM movimiento_inventario m JOIN movimiento_saldo s ON s.movimiento_id=m.movimiento_id AND s.saldo='N'
-                JOIN producto p ON p.producto_id=m.producto_id
-                WHERE m.darkstore_id=%s AND m.tipo='DANO' ORDER BY m.fecha DESC LIMIT 50""", (tienda,)),
-            'inspecciones': filas(conn, """SELECT i.inspeccion_id,i.producto_id,p.nombre,i.cantidad,i.resultado,i.fecha,
-                i.inspeccionado_por,EXISTS(SELECT 1 FROM movimiento_inventario m WHERE m.referencia_inspeccion_id=i.inspeccion_id) AS resuelta
-                FROM inspeccion_dano i JOIN producto p USING(producto_id)
-                WHERE i.darkstore_id=%s ORDER BY i.fecha DESC LIMIT 50""", (tienda,)),
-            'avisos': filas(conn, """SELECT a.tipo,a.pedido_id,a.fecha,a.entregado_en FROM aviso a JOIN pedido pe USING(pedido_id)
-                WHERE a.destinatario_tipo='RESPONSABLE' AND pe.darkstore_id=%s ORDER BY a.fecha DESC LIMIT 50""", (tienda,)),
-        }

@@ -273,8 +273,14 @@ def _respuesta_conservada(conn, clave: UUID, huella: bytes) -> JSONResponse | No
     return JSONResponse(previo[1]["cuerpo"], status_code=previo[1]["estado_http"], headers={"Resultado-Previo": "true"})
 
 
+RESERVA_DE = {
+    "CL-02": ("cliente", lambda cuerpo: cuerpo["reserva"], {}),
+    "CL-03": ("reserva", lambda cuerpo: cuerpo, {"estado": "ACTIVA"}),
+}
+
+
 def _ejecutar_reserva(conn, operacion: str, ejecutar: Callable[[], dict], estado_http: int, objeto_id: UUID) -> dict:
-    objeto = "reserva" if operacion == "CL-03" else "cliente"
+    objeto, reserva_de, anterior = RESERVA_DE[operacion]
     try:
         with conn.transaction():
             cuerpo = ejecutar()
@@ -283,10 +289,9 @@ def _ejecutar_reserva(conn, operacion: str, ejecutar: Callable[[], dict], estado
             raise
         return {"estado_http": error.estado_http, "cuerpo": error.cuerpo(), "motivo": error.codigo,
                 "objeto": objeto, "objeto_id": objeto_id, "anterior": {}, "resultante": {}}
-    reserva = cuerpo["reserva"] if operacion == "CL-02" else cuerpo
+    reserva = reserva_de(cuerpo)
     return {"estado_http": estado_http, "cuerpo": cuerpo, "motivo": None, "objeto": "reserva",
-            "objeto_id": reserva["reserva_id"], "anterior": {"estado": "ACTIVA"} if operacion == "CL-03" else {},
-            "resultante": {"estado": reserva["estado"]}}
+            "objeto_id": reserva["reserva_id"], "anterior": anterior, "resultante": {"estado": reserva["estado"]}}
 
 
 def _responder_operacion_reserva(conn, operacion: str, clave: UUID, cliente_id: UUID,
