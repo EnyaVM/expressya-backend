@@ -560,58 +560,135 @@ class IniciarPagoSolicitud(BaseModel):
     monto: str
 
 
-def _responder_intento_sin_respuesta(intento_id: UUID, clave: UUID, huella: bytes, response: Response):
+OTRO_CUERPO = "La Clave-Operacion ya fue utilizada con otro monto o cuerpo."
+
+
+def _conflicto_de_clave(mensaje: str = OTRO_CUERPO) -> ErrorDeNegocio:
+    return ErrorDeNegocio(409, "CONFLICTO_DE_CLAVE", mensaje)
+
+
+def _marcar_en_verificacion(conn, intento_id: UUID) -> str:
+    conn.execute("UPDATE intento_pago SET estado = 'EN_VERIFICACION' WHERE intento_id = %s AND estado = 'INICIADO'",
+                 (intento_id,))
+    return conn.execute("SELECT estado FROM intento_pago WHERE intento_id = %s", (intento_id,)).fetchone()[0]
+
+
+def _respuesta_de_intento(conn, intento_id: UUID, estado: str, estado_http: int) -> dict[str, Any]:
+    pedido_id, monto, t_vence = conn.execute(
+        "SELECT i.pedido_id, i.monto, r.t_vence FROM intento_pago i JOIN pedido p ON p.pedido_id = i.pedido_id "
+        "JOIN reserva r ON r.reserva_id = p.reserva_id WHERE i.intento_id = %s",
+        (intento_id,),
+    ).fetchone()
+    return {
+        "estado_http": estado_http,
+        "cuerpo": _serializar_intento(intento_id=intento_id, pedido_id=pedido_id, monto=monto, estado=estado,
+                                      t_vence_reserva=t_vence),
+        "estado_anterior": {"estado": "INICIADO"},
+        "estado_resultante": {"estado": estado},
+    }
+
+
+def _guardar_cl04(conn, clave: UUID, huella: bytes, intento_id: UUID, trabajo):
+    pedido_id = conn.execute("SELECT pedido_id FROM intento_pago WHERE intento_id = %s", (intento_id,)).fetchone()[0]
+    return ejecutar_idempotente(conn=conn, clave=clave, operacion="CL-04", objeto="pedido", objeto_id=pedido_id,
+                                actor_tipo="CLIENTE", huella=huella, trabajo=trabajo)
+
+
+def _responder_intento_sin_respuesta(intento_id: UUID, clave: UUID, huella: bytes):
     with pool.connection() as conn:
+        def trabajo():
+            estado = _marcar_en_verificacion(conn, intento_id)
+            return _respuesta_de_intento(conn, intento_id, estado, 202 if estado in ("INICIADO", "EN_VERIFICACION") else 201)
 
-        def _trabajo() -> dict[str, Any]:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE intento_pago SET estado = 'EN_VERIFICACION'
-                    WHERE intento_id = %s AND estado = 'INICIADO'
-                    """,
-                    (intento_id,),
-                )
-                cur.execute(
-                    """
-                    SELECT i.pedido_id, i.monto, i.estado, r.t_vence
-                    FROM intento_pago i
-                    JOIN pedido p ON p.pedido_id = i.pedido_id
-                    JOIN reserva r ON r.reserva_id = p.reserva_id
-                    WHERE i.intento_id = %s
-                    """,
-                    (intento_id,),
-                )
-                pedido_id, monto, estado, t_vence = cur.fetchone()
-            pendiente = estado in ("INICIADO", "EN_VERIFICACION")
-            return {
-                "estado_http": 202 if pendiente else 201,
-                "cuerpo": _serializar_intento(
-                    intento_id=intento_id,
-                    pedido_id=pedido_id,
-                    monto=monto,
-                    estado=estado,
-                    t_vence_reserva=t_vence,
-                ),
-                "estado_anterior": {"estado": "INICIADO"},
-                "estado_resultante": {"estado": estado},
-            }
-
-        pedido_id = conn.execute("SELECT pedido_id FROM intento_pago WHERE intento_id = %s", (intento_id,)).fetchone()[0]
-        respuesta, previa = ejecutar_idempotente(
-            conn=conn,
-            clave=clave,
-            operacion="CL-04",
-            objeto="pedido",
-            objeto_id=pedido_id,
-            actor_tipo="CLIENTE",
-            huella=huella,
-            trabajo=_trabajo,
-        )
+        respuesta, _ = _guardar_cl04(conn, clave, huella, intento_id, trabajo)
         conn.commit()
-    response.status_code = respuesta["estado_http"]
-    response.headers["Resultado-Previo"] = "true"
-    return respuesta["cuerpo"]
+    return respuesta, True
+
+
+def _respuesta_guardada(clave: UUID, huella: bytes) -> dict | None:
+    with pool.connection() as conn, conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 0))", (str(clave),))
+        previa = conn.execute("SELECT huella_solicitud, resultado, respuesta FROM registro_operacion WHERE clave_operacion = %s",
+                              (clave,)).fetchone()
+    if previa is None:
+        return None
+    huella_guardada, resultado, respuesta = previa
+    if bytes(huella_guardada) != huella:
+        raise _conflicto_de_clave()
+    if resultado == "RECHAZADA":
+        error = respuesta.get("cuerpo", {})
+        raise ErrorDeNegocio(respuesta.get("estado_http", 400), error.get("codigo", "SOLICITUD_INVALIDA"),
+                             error.get("mensaje", "Solicitud rechazada previamente."), error.get("detalle"))
+    return respuesta
+
+
+def _intento_sin_respuesta_guardada(clave: UUID, huella: bytes) -> UUID | None:
+    with pool.connection() as conn:
+        fila = conn.execute("SELECT intento_id, huella_solicitud FROM intento_pago WHERE clave_operacion = %s",
+                            (clave,)).fetchone()
+    if fila is not None and bytes(fila[1]) != huella:
+        raise _conflicto_de_clave()
+    return fila[0] if fila else None
+
+
+def _validar_pedido_para_pago(conn, pedido_id: UUID, cliente: UUID, monto: Decimal) -> None:
+    fila = conn.execute("SELECT reserva_id, cliente_id, total_vigente, estado FROM pedido WHERE pedido_id = %s FOR UPDATE",
+                        (pedido_id,)).fetchone()
+    if fila is None or fila[1] != cliente:
+        raise ErrorDeNegocio(404, "NO_ENCONTRADO", "El pedido no existe o no pertenece al cliente.")
+    reserva_id, _, total_vigente, estado = fila
+    if estado != "PENDIENTE_DE_PAGO":
+        raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE", f"El pedido está en estado {estado} y no admite pagos.")
+    exigir_reserva_vigente(conn, reserva_id)
+    if monto != total_vigente:
+        raise ErrorDeNegocio(400, "SOLICITUD_INVALIDA", "El monto del intento debe coincidir con el total vigente del pedido.")
+
+
+def _crear_intento(pedido_id: UUID, cliente: UUID, monto: Decimal, clave: UUID, huella: bytes) -> UUID:
+    intento_id = uuid4()
+    with pool.connection() as conn, conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 0))", (str(clave),))
+        if conn.execute("SELECT 1 FROM registro_operacion WHERE clave_operacion = %s", (clave,)).fetchone():
+            raise _conflicto_de_clave("La Clave-Operacion ya fue utilizada por otra operación.")
+        _validar_pedido_para_pago(conn, pedido_id, cliente, monto)
+        try:
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO intento_pago (intento_id, pedido_id, monto, fecha_inicio, estado, clave_operacion, huella_solicitud) "
+                    "VALUES (%s, %s, %s, clock_timestamp(), 'INICIADO', %s, %s)",
+                    (intento_id, pedido_id, monto, clave, huella),
+                )
+        except UniqueViolation as exc:
+            raise ErrorDeNegocio(409, "INTENTO_ABIERTO", "Ya existe un intento de pago en curso para este pedido.") from exc
+    return intento_id
+
+
+def _cerrar_intento(intento_id: UUID, clave: UUID, huella: bytes, resultado_pasarela) -> tuple[dict, bool, bool]:
+    efectos = {"ev01": False}
+    with pool.connection() as conn:
+        def trabajo():
+            if resultado_pasarela is None:
+                return _respuesta_de_intento(conn, intento_id, _marcar_en_verificacion(conn, intento_id), 202)
+            estado, efectos["ev01"] = aplicar_resultado_intento(conn, intento_id, *resultado_pasarela)
+            return _respuesta_de_intento(conn, intento_id, estado, 201)
+
+        respuesta, previa = _guardar_cl04(conn, clave, huella, intento_id, trabajo)
+    return respuesta, previa, efectos["ev01"]
+
+
+def _cobrar(pedido_id: UUID, cliente: UUID, monto: Decimal, clave: UUID, huella: bytes) -> tuple[dict, bool]:
+    guardada = _respuesta_guardada(clave, huella)
+    if guardada is not None:
+        return guardada, True
+    pendiente = _intento_sin_respuesta_guardada(clave, huella)
+    if pendiente is not None:
+        return _responder_intento_sin_respuesta(pendiente, clave, huella)
+    intento_id = _ejecutar_con_reintento_concurrencia(lambda: _crear_intento(pedido_id, cliente, monto, clave, huella))
+    resultado = pasarela_simulada.cobrar(intento_id, _formatear_dinero(monto))
+    respuesta, previa, ev01 = _ejecutar_con_reintento_concurrencia(lambda: _cerrar_intento(intento_id, clave, huella, resultado))
+    if ev01 and not previa:
+        procesar_eventos_pendientes()
+    return respuesta, previa
 
 
 def _iniciar_intento_pago_en(
@@ -622,230 +699,14 @@ def _iniciar_intento_pago_en(
     cliente_id: str | None = Header(default=None, alias="Cliente-Id"),
 ):
     clave = validar_clave_operacion(clave_operacion)
-    cliente_uuid = _parsear_uuid_cabecera(cliente_id, "Cliente-Id")
-    monto_decimal = _parsear_dinero(cuerpo.monto)
-    huella = calcular_huella(
-        "CL-04",
-        pedido_id,
-        {"monto": _formatear_dinero(monto_decimal), "cliente_id": str(cliente_uuid)},
-    )
-
-    # 1. Verificación rápida de clave previa antes de crear intento
-    with pool.connection() as conn:
-        with conn.transaction():
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 0))",
-                    (str(clave),),
-                )
-                cur.execute(
-                    """
-                    SELECT huella_solicitud, resultado, respuesta
-                    FROM registro_operacion
-                    WHERE clave_operacion = %s
-                    """,
-                    (clave,),
-                )
-                previa = cur.fetchone()
-                if previa is not None:
-                    huella_guardada, resultado_guardado, respuesta_guardada = previa
-                    if bytes(huella_guardada) != huella:
-                        raise ErrorDeNegocio(
-                            409,
-                            "CONFLICTO_DE_CLAVE",
-                            "La Clave-Operacion ya fue utilizada con otro monto o cuerpo.",
-                        )
-                    if resultado_guardado == "RECHAZADA":
-                        cuerpo_err = respuesta_guardada.get("cuerpo", {})
-                        raise ErrorDeNegocio(
-                            respuesta_guardada.get("estado_http", 400),
-                            cuerpo_err.get("codigo", "SOLICITUD_INVALIDA"),
-                            cuerpo_err.get("mensaje", "Solicitud rechazada previamente."),
-                            cuerpo_err.get("detalle"),
-                        )
-                    response.status_code = respuesta_guardada["estado_http"]
-                    response.headers["Resultado-Previo"] = "true"
-                    return respuesta_guardada["cuerpo"]
-
-    # 1b. La clave ya quedó en un intento cuya respuesta no se guardó (caída a medio camino)
-    with pool.connection() as conn:
-        fila_clave = conn.execute(
-            "SELECT intento_id, huella_solicitud FROM intento_pago WHERE clave_operacion = %s",
-            (clave,),
-        ).fetchone()
-    if fila_clave is not None:
-        if bytes(fila_clave[1]) != huella:
-            raise ErrorDeNegocio(
-                409,
-                "CONFLICTO_DE_CLAVE",
-                "La Clave-Operacion ya fue utilizada con otro monto o cuerpo.",
-            )
-        return _responder_intento_sin_respuesta(fila_clave[0], clave, huella, response)
-
-    # 2. Transacción 1: validar pedido/reserva e insertar intento en INICIADO
-    intento_id = uuid4()
-    t_vence_reserva: datetime | None = None
-
-    def _tx1_iniciar() -> None:
-        nonlocal t_vence_reserva
-        with pool.connection() as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 0))",
-                        (str(clave),),
-                    )
-                    cur.execute(
-                        "SELECT 1 FROM registro_operacion WHERE clave_operacion = %s",
-                        (clave,),
-                    )
-                    if cur.fetchone() is not None:
-                        raise ErrorDeNegocio(
-                            409,
-                            "CONFLICTO_DE_CLAVE",
-                            "La Clave-Operacion ya fue utilizada por otra operación.",
-                        )
-                    cur.execute(
-                        """
-                        SELECT pedido_id, reserva_id, cliente_id, total_vigente, estado
-                        FROM pedido
-                        WHERE pedido_id = %s
-                        FOR UPDATE
-                        """,
-                        (pedido_id,),
-                    )
-                    fila_ped = cur.fetchone()
-                    if fila_ped is None or fila_ped[2] != cliente_uuid:
-                        raise ErrorDeNegocio(
-                            404,
-                            "NO_ENCONTRADO",
-                            "El pedido no existe o no pertenece al cliente.",
-                        )
-
-                    _, reserva_id, _, total_vigente, estado_pedido = fila_ped
-                    if estado_pedido != "PENDIENTE_DE_PAGO":
-                        raise ErrorDeNegocio(
-                            409,
-                            "ESTADO_INCOMPATIBLE",
-                            f"El pedido está en estado {estado_pedido} y no admite pagos.",
-                        )
-
-                    exigir_reserva_vigente(conn, reserva_id)
-
-                    if monto_decimal != total_vigente:
-                        raise ErrorDeNegocio(
-                            400,
-                            "SOLICITUD_INVALIDA",
-                            "El monto del intento debe coincidir con el total vigente del pedido.",
-                        )
-
-                    cur.execute(
-                        "SELECT t_vence FROM reserva WHERE reserva_id = %s",
-                        (reserva_id,),
-                    )
-                    t_vence_reserva = cur.fetchone()[0]
-
-                    try:
-                        cur.execute(
-                            """
-                            INSERT INTO intento_pago (
-                                intento_id, pedido_id, monto, fecha_inicio, estado,
-                                clave_operacion, huella_solicitud
-                            )
-                            VALUES (
-                                %s, %s, %s, clock_timestamp(), 'INICIADO',
-                                %s, %s
-                            )
-                            """,
-                            (intento_id, pedido_id, monto_decimal, clave, huella),
-                        )
-                    except UniqueViolation as exc:
-                        raise ErrorDeNegocio(
-                            409,
-                            "INTENTO_ABIERTO",
-                            "Ya existe un intento de pago en curso para este pedido.",
-                        ) from exc
-
-    _ejecutar_con_reintento_concurrencia(_tx1_iniciar)
-
-    # 3. Llamada externa fuera de la transacción
-    resultado_pasarela = pasarela_simulada.cobrar(intento_id, _formatear_dinero(monto_decimal))
-
-    # 4. Transacción 2: aplicar resultado y guardar registro_operacion idempotente
-    genero_ev01 = False
-
-    def _tx2_cerrar() -> tuple[dict[str, Any], bool]:
-        nonlocal genero_ev01
-        with pool.connection() as conn:
-
-            def _trabajo() -> dict[str, Any]:
-                nonlocal genero_ev01
-                assert t_vence_reserva is not None
-                if resultado_pasarela is None:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            UPDATE intento_pago
-                            SET estado = 'EN_VERIFICACION'
-                            WHERE intento_id = %s AND estado = 'INICIADO'
-                            RETURNING estado
-                            """,
-                            (intento_id,),
-                        )
-                        fila_est = cur.fetchone()
-                        if fila_est is None:
-                            cur.execute(
-                                "SELECT estado FROM intento_pago WHERE intento_id = %s",
-                                (intento_id,),
-                            )
-                            estado_final = cur.fetchone()[0]
-                        else:
-                            estado_final = fila_est[0]
-                    estado_http = 202
-                else:
-                    res_str, ref_ext = resultado_pasarela
-                    estado_final, genero_ev01 = aplicar_resultado_intento(
-                        conn,
-                        intento_id=intento_id,
-                        resultado=res_str,
-                        referencia_externa=ref_ext,
-                    )
-                    estado_http = 201
-
-                cuerpo_resp = _serializar_intento(
-                    intento_id=intento_id,
-                    pedido_id=pedido_id,
-                    monto=monto_decimal,
-                    estado=estado_final,
-                    t_vence_reserva=t_vence_reserva,
-                )
-                return {
-                    "estado_http": estado_http,
-                    "cuerpo": cuerpo_resp,
-                    "estado_anterior": {"estado": "INICIADO"},
-                    "estado_resultante": {"estado": estado_final},
-                }
-
-            return ejecutar_idempotente(
-                conn=conn,
-                clave=clave,
-                operacion="CL-04",
-                objeto="pedido",
-                objeto_id=pedido_id,
-                actor_tipo="CLIENTE",
-                huella=huella,
-                trabajo=_trabajo,
-            )
-
-    respuesta_final, es_previo = _ejecutar_con_reintento_concurrencia(_tx2_cerrar)
-
-    if genero_ev01 and not es_previo:
-        procesar_eventos_pendientes()
-
-    response.status_code = respuesta_final["estado_http"]
-    if es_previo:
+    cliente = _parsear_uuid_cabecera(cliente_id, "Cliente-Id")
+    monto = _parsear_dinero(cuerpo.monto)
+    huella = calcular_huella("CL-04", pedido_id, {"monto": _formatear_dinero(monto), "cliente_id": str(cliente)})
+    respuesta, previa = _cobrar(pedido_id, cliente, monto, clave, huella)
+    response.status_code = respuesta["estado_http"]
+    if previa:
         response.headers["Resultado-Previo"] = "true"
-    return respuesta_final["cuerpo"]
+    return respuesta["cuerpo"]
 
 
 @contextmanager
