@@ -14,6 +14,7 @@ from app.modulos.reservas import cerrar_si_sigue_activa
 router = APIRouter(tags=["Faltantes (M01, M05)"])
 
 ROLES_CONTEO = ("PICKER", "SUPERVISOR")
+ROLES_REPORTE = ("PICKER", "PERSONAL_TIENDA")
 
 FALTANTE = "FALTANTE"
 DIFERENCIA = "DIFERENCIA_SIN_FALTANTE"
@@ -22,6 +23,10 @@ DIFERENCIA = "DIFERENCIA_SIN_FALTANTE"
 class ConteoSolicitud(BaseModel):
     cantidad_contada: int = Field(ge=0)
     fecha_corte: datetime
+
+
+class FaltanteSolicitud(BaseModel):
+    evidencia: str = Field(min_length=1, max_length=500)
 
 
 def exigir_rol(conn, usuario_id: UUID, darkstore_id: UUID, roles: tuple[str, ...]) -> None:
@@ -174,6 +179,28 @@ def poner_en_revision(conn, darkstore_id, producto_id, diferencia, usuario_id, c
     )
 
 
+def reportar_faltante(conn, linea_id, usuario_id, evidencia, clave) -> dict:
+    fila = conn.execute(
+        "SELECT pedido_id, darkstore_id, producto_id FROM linea_pedido WHERE linea_id = %s", (linea_id,)
+    ).fetchone()
+    if fila is None:
+        raise ErrorDeNegocio(404, "NO_ENCONTRADO", "La línea de pedido no existe.")
+    pedido_id, darkstore_id, producto_id = fila
+    exigir_rol(conn, usuario_id, darkstore_id, ROLES_REPORTE)
+    estado_pedido = conn.execute("SELECT estado FROM pedido WHERE pedido_id = %s FOR UPDATE", (pedido_id,)).fetchone()[0]
+    bloquear_inventario(conn, darkstore_id, producto_id)
+    estado_linea = conn.execute("SELECT estado FROM linea_pedido WHERE linea_id = %s FOR UPDATE", (linea_id,)).fetchone()[0]
+    if estado_pedido != "CONFIRMADO" or estado_linea != "ASIGNADA":
+        raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE", "Solo se reporta un faltante en una línea pagada pendiente de surtir.")
+    discrepancia_id = abrir_discrepancia(conn, darkstore_id, producto_id, FALTANTE, "M05", reportado_por=usuario_id, evidencia=evidencia)
+    registrar_movimiento(
+        conn, darkstore_id, producto_id, "DISCREPANCIA", "discrepancia_fisica", usuario_id, clave, {},
+        linea=linea_id, discrepancia=discrepancia_id,
+    )
+    marcar_faltante(conn, darkstore_id, producto_id, discrepancia_id, clave)
+    return {"discrepancia_id": str(discrepancia_id), "estado": "EN_VALIDACION", "origen": "REPORTE_PICKER"}
+
+
 def operar(operacion, objeto, objeto_id, usuario_id, clave, cuerpo: dict, trabajo, response: Response, estado_http: int):
     huella = calcular_huella(operacion, objeto_id, {**cuerpo, "usuario_id": str(usuario_id)})
 
@@ -216,5 +243,22 @@ def registrar_conteo_http(
         "CL-09", "producto", producto_id, usuario, clave,
         {"darkstore_id": str(darkstore_id), **cuerpo.model_dump(mode="json")},
         lambda conn: registrar_conteo(conn, darkstore_id, producto_id, usuario, cuerpo.cantidad_contada, cuerpo.fecha_corte, clave),
+        response, 201,
+    )
+
+
+@router.post("/v1/lineas-pedido/{linea_id}/faltantes", status_code=201)
+def reportar_faltante_http(
+    linea_id: UUID,
+    cuerpo: FaltanteSolicitud,
+    response: Response,
+    clave_operacion: str | None = Header(default=None, alias="Clave-Operacion"),
+    usuario_id: str | None = Header(default=None, alias="Usuario-Id"),
+):
+    clave = validar_clave_operacion(clave_operacion)
+    usuario = usuario_registrado(usuario_id)
+    return operar(
+        "CL-10", "linea_pedido", linea_id, usuario, clave, cuerpo.model_dump(),
+        lambda conn: reportar_faltante(conn, linea_id, usuario, cuerpo.evidencia, clave),
         response, 201,
     )
