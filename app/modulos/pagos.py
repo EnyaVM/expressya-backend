@@ -196,6 +196,12 @@ def aplicar_resultado_intento(
         return nuevo_estado, genero_ev01
 
 
+def _siguiente_en_cola(conn, intento_id: UUID, estado: str) -> UUID | None:
+    if estado != "REEMBOLSO_EN_PROCESO":
+        return None
+    return conn.execute("SELECT reembolso_actual_id FROM intento_pago WHERE intento_id = %s", (intento_id,)).fetchone()[0]
+
+
 def _aplicar_resultado_reembolso(
     conn,
     reembolso_id: UUID,
@@ -410,93 +416,38 @@ def solicitar_reembolso(
         return reembolso_id
 
 
+def _marcar_envio(reembolso_id: UUID) -> str | None:
+    with pool.connection() as conn, conn.transaction():
+        fila = conn.execute(
+            "SELECT r.monto, r.fecha_envio, i.estado, i.reembolso_actual_id FROM reembolso r "
+            "JOIN intento_pago i ON i.intento_id = r.intento_id WHERE r.reembolso_id = %s FOR UPDATE OF i, r",
+            (reembolso_id,),
+        ).fetchone()
+        if fila is None or fila[1] is not None or fila[3] != reembolso_id or fila[2] != "REEMBOLSO_EN_PROCESO":
+            return None
+        conn.execute("UPDATE reembolso SET fecha_envio = clock_timestamp() WHERE reembolso_id = %s", (reembolso_id,))
+        return _formatear_dinero(fila[0])
+
+
+def _registrar_respuesta_reembolso(reembolso_id: UUID, respuesta) -> UUID | None:
+    with pool.connection() as conn, conn.transaction():
+        if respuesta is None:
+            conn.execute("UPDATE intento_pago SET estado = 'REEMBOLSO_EN_VERIFICACION' "
+                         "WHERE reembolso_actual_id = %s AND estado = 'REEMBOLSO_EN_PROCESO'", (reembolso_id,))
+            return None
+        resultado, referencia = respuesta
+        estado = _aplicar_resultado_reembolso(conn, reembolso_id=reembolso_id, resultado=resultado, referencia_externa=referencia)
+        intento_id = conn.execute("SELECT intento_id FROM reembolso WHERE reembolso_id = %s", (reembolso_id,)).fetchone()[0]
+        return _siguiente_en_cola(conn, intento_id, estado)
+
+
 def enviar_reembolso(reembolso_id: UUID) -> None:
-    """
-    Envía el reembolso a la pasarela simulada FUERA de la transacción de creación.
-    Si responde CONFIRMADO/FALLIDO, actualiza; si no responde (None), pasa a REEMBOLSO_EN_VERIFICACION.
-    """
-    monto_str: str | None = None
-    siguiente_a_enviar: UUID | None = None
-
-    with pool.connection() as conn:
-        with conn.transaction():
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT r.reembolso_id, r.intento_id, r.monto, r.fecha_envio,
-                           i.estado, i.reembolso_actual_id
-                    FROM reembolso r
-                    JOIN intento_pago i ON i.intento_id = r.intento_id
-                    WHERE r.reembolso_id = %s
-                    FOR UPDATE OF i, r
-                    """,
-                    (reembolso_id,),
-                )
-                fila = cur.fetchone()
-                if fila is None:
-                    return
-                _, _, monto, fecha_envio, estado_intento, reembolso_actual_id = fila
-
-                # Nunca reenviar si ya fue enviado o ya no es el reembolso activo
-                if fecha_envio is not None or reembolso_actual_id != reembolso_id:
-                    return
-                if estado_intento != "REEMBOLSO_EN_PROCESO":
-                    return
-
-                cur.execute(
-                    """
-                    UPDATE reembolso
-                    SET fecha_envio = clock_timestamp()
-                    WHERE reembolso_id = %s
-                    """,
-                    (reembolso_id,),
-                )
-                monto_str = _formatear_dinero(monto)
-
-    if monto_str is None:
+    monto = _marcar_envio(reembolso_id)
+    if monto is None:
         return
-
-    respuesta_pasarela = pasarela_simulada.reembolsar(reembolso_id, monto_str)
-
-    with pool.connection() as conn:
-        with conn.transaction():
-            if respuesta_pasarela is None:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE intento_pago
-                        SET estado = 'REEMBOLSO_EN_VERIFICACION'
-                        WHERE reembolso_actual_id = %s
-                          AND estado = 'REEMBOLSO_EN_PROCESO'
-                        """,
-                        (reembolso_id,),
-                    )
-                return
-
-            resultado, referencia = respuesta_pasarela
-            nuevo_estado = _aplicar_resultado_reembolso(
-                conn,
-                reembolso_id=reembolso_id,
-                resultado=resultado,
-                referencia_externa=referencia,
-            )
-            if nuevo_estado == "REEMBOLSO_EN_PROCESO":
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT reembolso_actual_id
-                        FROM intento_pago
-                        WHERE reembolso_actual_id IS NOT NULL
-                          AND intento_id = (SELECT intento_id FROM reembolso WHERE reembolso_id = %s)
-                        """,
-                        (reembolso_id,),
-                    )
-                    fila_sig = cur.fetchone()
-                    if fila_sig:
-                        siguiente_a_enviar = fila_sig[0]
-
-    if siguiente_a_enviar is not None:
-        enviar_reembolso(siguiente_a_enviar)
+    siguiente = _registrar_respuesta_reembolso(reembolso_id, pasarela_simulada.reembolsar(reembolso_id, monto))
+    if siguiente is not None:
+        enviar_reembolso(siguiente)
 
 
 def recuperar_intentos_iniciados(segundos: int = PLAZO_PASARELA_SEGUNDOS) -> int:
@@ -776,10 +727,7 @@ def notificar_reembolso(conn, cuerpo: NotificacionPasarelaSolicitud) -> tuple[st
     if fila is None:
         raise ErrorDeNegocio(404, "NO_ENCONTRADO", "Reembolso no encontrado.")
     estado = _aplicar_resultado_reembolso(conn, cuerpo.objeto_id, cuerpo.resultado, cuerpo.referencia_externa)
-    siguiente = None
-    if estado == "REEMBOLSO_EN_PROCESO":
-        siguiente = conn.execute("SELECT reembolso_actual_id FROM intento_pago WHERE intento_id = %s", (fila[1],)).fetchone()[0]
-    return fila[0], estado, {"enviar_reembolso": siguiente}
+    return fila[0], estado, {"enviar_reembolso": _siguiente_en_cola(conn, fila[1], estado)}
 
 
 APLICAR_NOTIFICACION = {"INTENTO": notificar_intento, "REEMBOLSO": notificar_reembolso}
@@ -964,6 +912,36 @@ class VerificacionReembolsoSolicitud(BaseModel):
     evidencia: dict[str, Any]
 
 
+def _reembolso_en_verificacion(conn, reembolso_id: UUID) -> tuple:
+    fila = conn.execute(
+        "SELECT r.intento_id, r.pedido_id, r.monto, r.motivo, r.referencia_externa, i.estado, i.reembolso_actual_id "
+        "FROM reembolso r JOIN intento_pago i ON i.intento_id = r.intento_id WHERE r.reembolso_id = %s FOR UPDATE OF i, r",
+        (reembolso_id,),
+    ).fetchone()
+    if fila is None:
+        raise ErrorDeNegocio(404, "NO_ENCONTRADO", "El reembolso no existe.")
+    if fila[5] != "REEMBOLSO_EN_VERIFICACION" or fila[6] != reembolso_id:
+        raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE",
+                             f"El reembolso no está en REEMBOLSO_EN_VERIFICACION (estado actual: {fila[5]}).")
+    return fila[:6]
+
+
+def _resolver_reembolso_manual(conn, reembolso_id: UUID, usuario: UUID, cuerpo, siguiente: list) -> dict[str, Any]:
+    _exigir_rol_responsable(conn, usuario)
+    intento_id, pedido_id, monto, motivo, referencia, estado_previo = _reembolso_en_verificacion(conn, reembolso_id)
+    conn.execute("UPDATE reembolso SET evidencia_revision = %s, responsable_revision = %s WHERE reembolso_id = %s",
+                 (Jsonb(cuerpo.evidencia), usuario, reembolso_id))
+    estado = _aplicar_resultado_reembolso(conn, reembolso_id=reembolso_id, resultado=cuerpo.resultado)
+    siguiente.append(_siguiente_en_cola(conn, intento_id, estado))
+    return {
+        "estado_http": 200,
+        "cuerpo": _serializar_reembolso(reembolso_id=reembolso_id, intento_id=intento_id, pedido_id=pedido_id, monto=monto,
+                                        motivo=motivo, estado_intento=estado, referencia_externa=referencia),
+        "estado_anterior": {"estado": estado_previo},
+        "estado_resultante": {"estado": estado},
+    }
+
+
 @router.post("/v1/reembolsos/{reembolso_id}/verificacion")
 def verificar_reembolso_manual(
     reembolso_id: UUID,
@@ -973,128 +951,27 @@ def verificar_reembolso_manual(
     usuario_id: str | None = Header(default=None, alias="Usuario-Id"),
 ):
     clave = validar_clave_operacion(clave_operacion)
-    usuario_uuid = _parsear_uuid_cabecera(usuario_id, "Usuario-Id")
-    huella = calcular_huella(
-        "CL-06",
-        reembolso_id,
-        {
-            "tipo": "REEMBOLSO",
-            "usuario_id": str(usuario_uuid),
-            "resultado": cuerpo.resultado,
-            "evidencia": cuerpo.evidencia,
-        },
-    )
+    usuario = _parsear_uuid_cabecera(usuario_id, "Usuario-Id")
+    huella = calcular_huella("CL-06", reembolso_id, {"tipo": "REEMBOLSO", "usuario_id": str(usuario),
+                                                     "resultado": cuerpo.resultado, "evidencia": cuerpo.evidencia})
+    siguiente: list = []
 
-    siguiente_reembolso: UUID | None = None
-
-    def _tx_verif_reembolso() -> tuple[dict[str, Any], bool]:
-        nonlocal siguiente_reembolso
+    def transaccion():
+        siguiente.clear()
         with pool.connection() as conn:
-
-            def _trabajo() -> dict[str, Any]:
-                nonlocal siguiente_reembolso
-                _exigir_rol_responsable(conn, usuario_uuid)
-
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT r.reembolso_id, r.intento_id, r.pedido_id, r.monto, r.motivo,
-                               r.referencia_externa, i.estado, i.reembolso_actual_id
-                        FROM reembolso r
-                        JOIN intento_pago i ON i.intento_id = r.intento_id
-                        WHERE r.reembolso_id = %s
-                        FOR UPDATE OF i, r
-                        """,
-                        (reembolso_id,),
-                    )
-                    fila = cur.fetchone()
-                    if fila is None:
-                        raise ErrorDeNegocio(404, "NO_ENCONTRADO", "El reembolso no existe.")
-
-                    (
-                        _,
-                        intento_id,
-                        pedido_id,
-                        monto,
-                        motivo,
-                        referencia_externa,
-                        estado_intento,
-                        reembolso_actual_id,
-                    ) = fila
-
-                    if (
-                        estado_intento != "REEMBOLSO_EN_VERIFICACION"
-                        or reembolso_actual_id != reembolso_id
-                    ):
-                        raise ErrorDeNegocio(
-                            409,
-                            "ESTADO_INCOMPATIBLE",
-                            f"El reembolso no está en REEMBOLSO_EN_VERIFICACION (estado actual: {estado_intento}).",
-                        )
-
-                    cur.execute(
-                        """
-                        UPDATE reembolso
-                        SET evidencia_revision = %s,
-                            responsable_revision = %s
-                        WHERE reembolso_id = %s
-                        """,
-                        (Jsonb(cuerpo.evidencia), usuario_uuid, reembolso_id),
-                    )
-
-                estado_final_intento = _aplicar_resultado_reembolso(
-                    conn,
-                    reembolso_id=reembolso_id,
-                    resultado=cuerpo.resultado,
-                )
-
-                if estado_final_intento == "REEMBOLSO_EN_PROCESO":
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT reembolso_actual_id FROM intento_pago WHERE intento_id = %s",
-                            (intento_id,),
-                        )
-                        fila_sig = cur.fetchone()
-                        if fila_sig:
-                            siguiente_reembolso = fila_sig[0]
-
-                cuerpo_resp = _serializar_reembolso(
-                    reembolso_id=reembolso_id,
-                    intento_id=intento_id,
-                    pedido_id=pedido_id,
-                    monto=monto,
-                    motivo=motivo,
-                    estado_intento=estado_final_intento,
-                    referencia_externa=referencia_externa,
-                )
-                return {
-                    "estado_http": 200,
-                    "cuerpo": cuerpo_resp,
-                    "estado_anterior": {"estado": estado_intento},
-                    "estado_resultante": {"estado": estado_final_intento},
-                }
-
             return ejecutar_idempotente(
-                conn=conn,
-                clave=clave,
-                operacion="CL-06",
-                objeto="reembolso",
-                objeto_id=reembolso_id,
-                actor_tipo="USUARIO_OPERATIVO",
-                huella=huella,
-                trabajo=_trabajo,
-                usuario_id=usuario_uuid,
+                conn=conn, clave=clave, operacion="CL-06", objeto="reembolso", objeto_id=reembolso_id,
+                actor_tipo="USUARIO_OPERATIVO", huella=huella, usuario_id=usuario,
+                trabajo=lambda: _resolver_reembolso_manual(conn, reembolso_id, usuario, cuerpo, siguiente),
             )
 
-    respuesta_final, es_previo = _ejecutar_con_reintento_concurrencia(_tx_verif_reembolso)
-
-    if siguiente_reembolso is not None and not es_previo:
-        enviar_reembolso(siguiente_reembolso)
-
-    response.status_code = respuesta_final["estado_http"]
-    if es_previo:
+    respuesta, previa = _ejecutar_con_reintento_concurrencia(transaccion)
+    if siguiente and siguiente[0] and not previa:
+        enviar_reembolso(siguiente[0])
+    response.status_code = respuesta["estado_http"]
+    if previa:
         response.headers["Resultado-Previo"] = "true"
-    return respuesta_final["cuerpo"]
+    return respuesta["cuerpo"]
 
 
 # ==============================================================================
