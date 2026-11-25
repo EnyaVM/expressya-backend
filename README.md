@@ -242,6 +242,7 @@ Ruta de cada operación (cabeceras `Clave-Operacion` y `Usuario-Id`; repetir la 
 | AT-08: cinco líneas, una faltante; las otras cuatro continúan | `test_at08_las_otras_lineas_se_siguen_separando_y_la_faltante_no`, `test_at08_cinco_lineas_una_faltante_cancela_solo_lo_que_falta_y_las_otras_continuan` | `tests/test_cl10_faltante.py`, `tests/test_cl12_resolucion.py` |
 | Cancelación parcial y reembolso de lo faltante | `test_d05_reparte_por_orden_de_compromiso_y_cancela_al_ultimo`, `test_las_unidades_ya_separadas_se_quedan_con_su_pedido`, `test_faltante_total_cancela_la_linea_y_el_pedido_de_un_solo_producto` | `tests/test_cl12_resolucion.py` |
 | AT-09: reembolso parcial repetido aplicado una sola vez | `test_resolver_dos_veces_da_409_y_la_misma_clave_devuelve_la_respuesta_guardada`, `test_aplicar_dos_veces_el_mismo_faltante_no_duplica_el_reembolso` | `tests/test_cl12_resolucion.py`, `tests/test_cancelaciones.py` |
+| Producto retirado mientras se paga: se reembolsa lo retirado al confirmar | `test_producto_retirado_durante_el_pago_se_reembolsa_al_confirmar`, `test_dos_productos_retirados_reembolsan_cada_uno_una_vez`, `test_si_se_retira_todo_durante_el_pago_se_reembolsa_completo` | `tests/test_cl11_sobrecobro.py` |
 | Historial: quién, qué, cuándo, por qué y cómo afectó al pedido | `test_la_resolucion_queda_en_el_historial_con_quien_la_autorizo`; `v_reconstruccion_saldos` cuadra en cada prueba (`historial_cuadra`) | `tests/test_cl12_resolucion.py` |
 | Perfiles por tienda (RBAC) | `test_sin_rol_de_conteo_en_la_tienda_responde_403`, `test_personal_de_tienda_puede_reportar_y_responsable_no`, `test_solo_el_supervisor_de_la_tienda_resuelve` | los tres archivos de C3 |
 
@@ -259,7 +260,7 @@ Decisiones `PROPUESTA` del equipo (trazadas a D-05, P4 y P8):
 - **CL-11 síncrono:** el retiro de reservas ocurre en la misma transacción y el EV-03 se registra ya procesado.
 - **Rol de resolución:** `SUPERVISOR` (OpenAPI x-roles; rol candidato pendiente de validación).
 
-Límite declarado: si a un pedido en pago se le retira un producto por faltante, el monto cobrado puede superar el nuevo total; esa diferencia todavía no se reembolsa automáticamente.
+- **Producto retirado durante el pago:** si CL-11 retira un producto de una reserva cuyo pago ya inició, al confirmarse el cobro (CL-07) se genera un reembolso por cada línea retirada (`PRODUCTO_RETIRADO`, con `reserva_origen_id` y `producto_origen_id`); lo cobrado menos lo reembolsado es igual al nuevo total. Si se retiran todas las líneas, se reembolsa el 100 %. Pruebas: `tests/test_cl11_sobrecobro.py`.
 
 ## Estructura
 
@@ -297,6 +298,8 @@ tests/
   escenarios_faltantes.py ayudantes de C3: usuarios con perfil, conteo, reporte y resolución por la API
   test_cl09_conteo.py    CL-09: 10 contra 8, faltante, sobrante, repetición, perfiles
   test_cl10_faltante.py  CL-10 y CL-11: bloqueo, NO_SURTIBLE, retiro de reservas, las demás líneas continúan
+  test_cl11_sobrecobro.py CL-11 + CL-07: reembolso de productos retirados durante el pago
+  test_preparar_demo.py  la demo aplica precios y archivos nuevos de db/ sin borrar pedidos
   test_cl12_resolucion.py CL-12: ajuste, D-05 por fecha de compromiso, cancelación parcial y reembolso
   test_at02_limite_300s.py AT-02: vigente a los 299 s y vencida a los 300 s
 db/

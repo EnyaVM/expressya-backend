@@ -66,6 +66,28 @@ def _disparar_reembolso_interno(
     return solicitar_reembolso(conn, intento_id=intento_id, monto=monto, motivo=motivo)
 
 
+def reembolsar_productos_retirados(conn, intento_id: UUID, reserva_id: UUID) -> UUID | None:
+    from app.modulos.pagos import solicitar_reembolso
+
+    retiradas = conn.execute(
+        """
+        SELECT lr.producto_id, lr.cantidad * lr.precio_unitario
+        FROM linea_reserva lr
+        JOIN intento_pago i ON i.intento_id = %s
+        WHERE lr.reserva_id = %s
+          AND lr.fecha_retiro > i.fecha_inicio
+        ORDER BY lr.producto_id
+        """,
+        (intento_id, reserva_id),
+    ).fetchall()
+    primeros = [
+        solicitar_reembolso(conn, intento_id=intento_id, monto=monto, motivo="PRODUCTO_RETIRADO",
+                            reserva_origen_id=reserva_id, producto_origen_id=producto_id)
+        for producto_id, monto in retiradas
+    ]
+    return next((r for r in primeros if r is not None), None)
+
+
 def confirmar_compra(conn, intento_id: UUID) -> UUID | None:
     """
     CL-07 (interno M03): Confirma la compra ante un EV-01 de intento APROBADO.
@@ -106,7 +128,7 @@ def confirmar_compra(conn, intento_id: UUID) -> UUID | None:
         # Bloquear reserva y líneas en orden determinista
         cur.execute(
             """
-            SELECT reserva_id, estado, t_vence
+            SELECT reserva_id, estado, t_vence, motivo_cierre
             FROM reserva
             WHERE reserva_id = %s
             FOR UPDATE
@@ -252,7 +274,7 @@ def confirmar_compra(conn, intento_id: UUID) -> UUID | None:
                 """,
                 (intento_id, pedido_id),
             )
-            return None
+            return reembolsar_productos_retirados(conn, intento_id, reserva_id)
 
         # 5. Caso B (reloj >= t_vence o reserva ya EXPIRADA/LIBERADA): pago tardío -> reembolso 100%
         if estado_reserva == "ACTIVA":
@@ -280,7 +302,7 @@ def confirmar_compra(conn, intento_id: UUID) -> UUID | None:
             conn,
             intento_id=intento_id,
             monto=monto_intento,
-            motivo="PAGO_TARDIO",
+            motivo="PRODUCTO_RETIRADO" if fila_reserva and fila_reserva[3] == "FALTANTE" else "PAGO_TARDIO",
         )
 
 
