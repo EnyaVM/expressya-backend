@@ -129,3 +129,91 @@ def test_una_asignacion_sin_canceladas_no_cancela_nada():
     aplicar_faltante(crear_resolucion_faltante(tienda, producto, linea, 0), linea)
     assert lineas_de(pedido_id)[producto]["k"] == 0
     assert reembolsos_de(intento_id) == []
+
+
+def test_limites_del_monto():
+    import pytest as _pytest
+
+    from app.errores import ErrorDeNegocio
+    from app.modulos.pagos import MONTO_MAXIMO, _parsear_dinero
+
+    assert _parsear_dinero("0.01") == Decimal("0.01")
+    assert _parsear_dinero("0.50") == Decimal("0.50")
+    assert _parsear_dinero(str(MONTO_MAXIMO)) == MONTO_MAXIMO
+    for malo in ("0", "0.00", "-1", str(MONTO_MAXIMO + Decimal("0.01")), "1.001"):
+        with _pytest.raises(ErrorDeNegocio):
+            _parsear_dinero(malo)
+
+
+def test_el_reintento_por_interbloqueo_se_rinde_al_tercer_intento():
+    import pytest as _pytest
+    from psycopg.errors import DeadlockDetected
+
+    from app.modulos.pagos import _ejecutar_con_reintento_concurrencia
+
+    llamadas = []
+
+    def siempre():
+        llamadas.append(1)
+        raise DeadlockDetected()
+
+    with _pytest.raises(DeadlockDetected):
+        _ejecutar_con_reintento_concurrencia(siempre)
+    assert len(llamadas) == 3
+
+
+def test_no_se_paga_el_pedido_de_otro_cliente():
+    tienda, producto = preparar_escenario(3)
+    dueno = nuevo_cliente()
+    pedido = client.post("/v1/checkouts", headers={"Clave-Operacion": str(uuid4()), "Cliente-Id": str(dueno)},
+                         json={"darkstore_id": str(tienda), "lineas": [{"producto_id": str(producto), "cantidad": 1}]}).json()["pedido"]
+    r = client.post(f"/v1/pedidos/{pedido['pedido_id']}/intentos-pago",
+                    headers={"Clave-Operacion": str(uuid4()), "Cliente-Id": str(nuevo_cliente())},
+                    json={"monto": pedido["total_vigente"]})
+    assert r.status_code == 404
+
+
+def test_un_reembolso_solo_se_envia_una_vez_y_solo_el_que_esta_al_frente(monkeypatch):
+    from app.modulos import pasarela_simulada
+    from app.modulos.pagos import enviar_reembolso, solicitar_reembolso
+    from test_c2_reembolsos import _preparar_intento_aprobado
+
+    pedido_id, intento_id = _preparar_intento_aprobado(Decimal("200.00"))
+    with pool.connection() as conn, conn.transaction():
+        reserva, producto = conn.execute(
+            "SELECT lr.reserva_id, lr.producto_id FROM linea_reserva lr JOIN pedido p USING (reserva_id) WHERE p.pedido_id = %s",
+            (pedido_id,)).fetchone()
+        primero = solicitar_reembolso(conn, intento_id, Decimal("10.00"), "A")
+        solicitar_reembolso(conn, intento_id, Decimal("20.00"), "B", reserva_origen_id=reserva, producto_origen_id=producto)
+        segundo = conn.execute("SELECT reembolso_id FROM reembolso WHERE intento_id = %s AND motivo = 'B'", (intento_id,)).fetchone()[0]
+    llamadas = []
+    original = pasarela_simulada.reembolsar
+    monkeypatch.setattr(pasarela_simulada, "reembolsar", lambda r, m: llamadas.append(r) or original(r, m))
+    pasarela_simulada._estado_simulador["reembolso"] = "NO_RESPONDER"
+    try:
+        enviar_reembolso(segundo)
+        enviar_reembolso(primero)
+        enviar_reembolso(primero)
+    finally:
+        pasarela_simulada.reiniciar_simulador()
+    assert llamadas == [primero]
+
+
+def test_una_confirmacion_tardia_despues_de_un_fallo_se_respeta():
+    from app.modulos import pasarela_simulada
+    from app.modulos.pagos import enviar_reembolso, solicitar_reembolso
+    from test_c2_reembolsos import _preparar_intento_aprobado
+
+    _, intento_id = _preparar_intento_aprobado(Decimal("200.00"))
+    with pool.connection() as conn, conn.transaction():
+        reembolso = solicitar_reembolso(conn, intento_id, Decimal("200.00"), "PRUEBA")
+    pasarela_simulada._estado_simulador["reembolso"] = "NO_RESPONDER"
+    try:
+        enviar_reembolso(reembolso)
+    finally:
+        pasarela_simulada.reiniciar_simulador()
+    notificar = lambda resultado, ref: client.post("/v1/pasarela/notificaciones", json={
+        "objeto": "REEMBOLSO", "objeto_id": str(reembolso), "referencia_externa": ref, "resultado": resultado})
+    assert notificar("FALLIDO", "PSP-F1").json()["estado_aplicado"] == "REEMBOLSO_FALLIDO"
+    assert notificar("FALLIDO", "PSP-F2").json()["estado_aplicado"] == "REEMBOLSO_FALLIDO"
+    assert notificar("CONFIRMADO", "PSP-C1").json()["estado_aplicado"] == "REEMBOLSADO_TOTAL"
