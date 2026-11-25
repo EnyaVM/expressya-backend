@@ -217,3 +217,59 @@ def test_una_confirmacion_tardia_despues_de_un_fallo_se_respeta():
     assert notificar("FALLIDO", "PSP-F1").json()["estado_aplicado"] == "REEMBOLSO_FALLIDO"
     assert notificar("FALLIDO", "PSP-F2").json()["estado_aplicado"] == "REEMBOLSO_FALLIDO"
     assert notificar("CONFIRMADO", "PSP-C1").json()["estado_aplicado"] == "REEMBOLSADO_TOTAL"
+
+
+def test_enviar_un_reembolso_que_no_existe_no_hace_nada():
+    from app.modulos.pagos import enviar_reembolso
+
+    assert enviar_reembolso(uuid4()) is None
+
+
+def test_la_aprobacion_por_webhook_confirma_el_pedido_sin_otro_paso():
+    from app.modulos import pasarela_simulada
+    from escenarios_c3 import estado_pedido
+
+    tienda, producto = preparar_escenario(3)
+    cliente = nuevo_cliente()
+    pedido = client.post("/v1/checkouts", headers={"Clave-Operacion": str(uuid4()), "Cliente-Id": str(cliente)},
+                         json={"darkstore_id": str(tienda), "lineas": [{"producto_id": str(producto), "cantidad": 1}]}).json()["pedido"]
+    pasarela_simulada._estado_simulador["cobro"] = "NO_RESPONDER"
+    try:
+        intento = client.post(f"/v1/pedidos/{pedido['pedido_id']}/intentos-pago",
+                              headers={"Clave-Operacion": str(uuid4()), "Cliente-Id": str(cliente)},
+                              json={"monto": pedido["total_vigente"]}).json()["intento_id"]
+    finally:
+        pasarela_simulada.reiniciar_simulador()
+    client.post("/v1/pasarela/notificaciones", json={"objeto": "INTENTO", "objeto_id": intento,
+                                                    "referencia_externa": f"PSP-{uuid4().hex[:6]}", "resultado": "APROBADO"})
+    assert estado_pedido(pedido["pedido_id"]) == "CONFIRMADO"
+
+
+def test_separar_respeta_lo_ya_cancelado_de_la_linea():
+    from escenarios_c3 import aplicar_faltante, crear_resolucion_faltante, lineas_de
+
+    tienda, (producto,) = tienda_con_productos(1, unidades=10)
+    pedido_id, _, _ = pedido_pagado(tienda, [(producto, 3)])
+    linea = lineas_de(pedido_id)[producto]["linea_id"]
+    aplicar_faltante(crear_resolucion_faltante(tienda, producto, linea, 1), linea)
+    assert lineas_de(pedido_id)[producto]["estado"] == "ASIGNADA"
+    picker = nuevo_usuario(tienda, "PICKER")
+    r = client.post(f"/v1/lineas-pedido/{linea}/separaciones", headers={"Clave-Operacion": str(uuid4()), "Usuario-Id": str(picker)},
+                    json={"cantidad": 3})
+    assert r.status_code == 409
+
+
+def test_en_modo_de_pruebas_la_sesion_gana_a_la_cabecera(monkeypatch):
+    from test_cuentas import cuenta, sesion
+
+    monkeypatch.setenv("EXPRESSYA_ENCABEZADOS_DE_PRUEBA", "0")
+    ana = sesion(cuenta("CLIENTE"), "cliente")
+    monkeypatch.setenv("EXPRESSYA_ENCABEZADOS_DE_PRUEBA", "1")
+    tienda, producto = preparar_escenario(3)
+    ajeno = nuevo_cliente()
+    r = ana.post("/v1/checkouts", headers={"Clave-Operacion": str(uuid4()), "Cliente-Id": str(ajeno)},
+                 json={"darkstore_id": str(tienda), "lineas": [{"producto_id": str(producto), "cantidad": 1}]})
+    pedido = r.json()["pedido"]["pedido_id"]
+    with pool.connection() as conn:
+        duenio = conn.execute("SELECT cliente_id FROM pedido WHERE pedido_id = %s", (pedido,)).fetchone()[0]
+    assert duenio != ajeno

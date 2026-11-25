@@ -2,10 +2,10 @@
 
 Generada por `python -m scripts.evidencia_final` sobre una base reconstruida desde `db/*.sql`.
 
-- Commit: `297cd47`
-- Fecha: 2026-11-25T01:56:39
+- Commit: `ca41f9a`
+- Fecha: 2026-11-25T02:13:19
 - Python 3.12.3, PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1), FastAPI 0.110.0, psycopg 3.1.18, pytest 8.1.1
-- Suite completa: 247 de 247 casos pasan (0 fallan)
+- Suite completa: 252 de 252 casos pasan (0 fallan)
 
 | ID | Requisito | Diseño | Código (contrato) | Pruebas | Tipo | Resultado |
 |---|---|---|---|---|---|---|

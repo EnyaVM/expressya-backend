@@ -845,8 +845,8 @@ def verificar_reembolso_manual(
     siguiente: list = []
     respuesta = _operar_cl("CL-06", "reembolso", reembolso_id, clave, usuario, huella,
                            lambda conn: _resolver_reembolso_manual(conn, reembolso_id, usuario, cuerpo, siguiente), response)
-    if siguiente and siguiente[-1]:
-        enviar_reembolso(siguiente[-1])
+    for reembolso in filter(None, siguiente):
+        enviar_reembolso(reembolso)
     return respuesta["cuerpo"]
 
 

@@ -242,3 +242,11 @@ def test_reactivar_una_cuenta_no_revive_sus_sesiones_anteriores():
 
     assert cliente.get("/v1/auth/me").status_code == 401
     assert entrar(usuario, "cliente")[1].status_code == 200
+
+
+def test_activar_una_cuenta_ya_activa_no_cierra_su_sesion():
+    cliente = sesion(cuenta("CLIENTE"), "cliente")
+    admin = sesion(cuenta("ADMINISTRADOR"), "interno")
+    cuenta_id = cliente.get("/v1/auth/me").json()["cuenta_id"]
+    assert admin.patch(f"/v1/admin/cuentas/{cuenta_id}", json={"activo": True}).status_code == 200
+    assert cliente.get("/v1/auth/me").status_code == 200
