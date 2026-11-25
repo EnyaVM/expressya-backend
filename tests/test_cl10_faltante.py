@@ -86,6 +86,13 @@ def test_el_faltante_marca_las_lineas_de_otros_pedidos_y_retira_reservas_activas
             (reserva["reserva"]["reserva_id"],),
         ).fetchone()
     assert (estado, str(total)) == ("ACTIVA", "100.00")
+    with pool.connection() as conn:
+        retiro = conn.execute(
+            "SELECT ms.saldo, ms.cantidad FROM movimiento_inventario m JOIN movimiento_saldo ms USING (movimiento_id) "
+            "WHERE m.tipo = 'RETIRO_RESERVA' AND m.referencia_reserva_id = %s",
+            (reserva["reserva"]["reserva_id"],),
+        ).fetchall()
+    assert retiro == [("R", -1)]
 
 
 def reservar_varios(tienda, lineas):

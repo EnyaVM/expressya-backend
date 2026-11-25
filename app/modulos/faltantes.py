@@ -154,7 +154,7 @@ def registrar_conteo(conn, darkstore_id, producto_id, usuario_id, cantidad, fech
     discrepancia_id = abierta[0] if abierta else None
     if tipo and not abierta:
         discrepancia_id = abrir_discrepancia(conn, darkstore_id, producto_id, tipo, "M01", conteo_id=conteo_id)
-        poner_en_revision(conn, darkstore_id, producto_id, e - cantidad, usuario_id, clave, conteo_id, discrepancia_id)
+        poner_en_revision(conn, darkstore_id, producto_id, max(e - cantidad, 0), usuario_id, clave, conteo_id, discrepancia_id)
         if tipo == FALTANTE:
             marcar_faltante(conn, darkstore_id, producto_id, discrepancia_id, clave)
     return {
@@ -184,7 +184,7 @@ def clasificar_conteo(contadas: int, existencias: int, comprometidas: int) -> st
 
 
 def poner_en_revision(conn, darkstore_id, producto_id, diferencia, usuario_id, clave, conteo_id, discrepancia_id) -> None:
-    if diferencia <= 0:
+    if diferencia == 0:
         return
     conn.execute(
         "UPDATE inventario SET e = e - %s, n = n + %s WHERE darkstore_id = %s AND producto_id = %s",
@@ -231,7 +231,7 @@ def convertir_en_faltante(conn, darkstore_id, producto_id) -> UUID | None:
 def repartir(disponibles: int, pendientes: list[int]) -> list[tuple[int, int]]:
     reparto = []
     for pendiente in pendientes:
-        asignadas = min(pendiente, max(disponibles, 0))
+        asignadas = min(pendiente, disponibles)
         disponibles -= asignadas
         reparto.append((asignadas, pendiente - asignadas))
     return reparto
@@ -280,11 +280,12 @@ def lineas_pendientes(conn, darkstore_id, producto_id) -> list[tuple]:
 
 
 def bloquear_pedidos_y_lineas(conn, darkstore_id, producto_id) -> tuple[int, list[tuple]]:
-    pedidos = sorted({fila[1] for fila in lineas_pendientes(conn, darkstore_id, producto_id)})
+    pedidos = sorted({pedido_id for _, pedido_id, _, _ in lineas_pendientes(conn, darkstore_id, producto_id)})
     conn.execute("SELECT 1 FROM pedido WHERE pedido_id = ANY(%s) ORDER BY pedido_id FOR UPDATE", (pedidos,))
     e, _ = bloquear_inventario(conn, darkstore_id, producto_id)
     lineas = lineas_pendientes(conn, darkstore_id, producto_id)
-    conn.execute("SELECT 1 FROM linea_pedido WHERE linea_id = ANY(%s) ORDER BY linea_id FOR UPDATE", ([l[0] for l in lineas],))
+    ids = [linea_id for linea_id, _, _, _ in lineas]
+    conn.execute("SELECT 1 FROM linea_pedido WHERE linea_id = ANY(%s) ORDER BY linea_id FOR UPDATE", (ids,))
     return e, lineas
 
 
@@ -308,14 +309,15 @@ def resolver_discrepancia(conn, discrepancia_id, usuario_id, solicitud: Resoluci
     en_revision = unidades_en_revision(conn, discrepancia_id)
     unidades = solicitud.unidades_validadas
     validar_unidades(unidades, max(e + en_revision, contadas))
-    if unidades < reservadas(conn, tienda, producto) + sum(l[3] for l in lineas):
+    pendientes = [pendiente for _, _, _, pendiente in lineas]
+    if unidades < reservadas(conn, tienda, producto) + sum(pendientes):
         retirar_de_reservas_activas(conn, tienda, producto, discrepancia_id, clave)
-    reparto = repartir(unidades - reservadas(conn, tienda, producto), [l[3] for l in lineas])
+    reparto = repartir(unidades, pendientes)
     resolucion_id = registrar_resolucion(conn, discrepancia_id, d, usuario_id, solicitud)
     asignaciones = registrar_asignaciones(conn, resolucion_id, tienda, producto, lineas, reparto)
     ajustar_existencias(conn, tienda, producto, unidades - e, en_revision, usuario_id, clave, resolucion_id, discrepancia_id, solicitud.conteo_id)
     por_enviar.extend(cancelar_canceladas(conn, resolucion_id, asignaciones, usuario_id, clave))
-    cerrar_discrepancia(conn, discrepancia_id, tienda, producto, [l[0] for l in lineas])
+    cerrar_discrepancia(conn, discrepancia_id, tienda, producto, [linea_id for linea_id, _, _, _ in lineas])
     return {
         "resolucion_id": str(resolucion_id),
         "discrepancia_id": str(discrepancia_id),

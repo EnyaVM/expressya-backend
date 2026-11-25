@@ -69,11 +69,11 @@ def test_la_resolucion_queda_en_el_historial_con_quien_la_autorizo():
             (tienda, producto),
         ).fetchall()
         resolucion = conn.execute(
-            "SELECT supervisor_id, unidades_validadas, evidencia FROM resolucion_faltante WHERE discrepancia_id = %s",
+            "SELECT supervisor_id, unidades_validadas, evidencia, regla_aplicada FROM resolucion_faltante WHERE discrepancia_id = %s",
             (conteo["discrepancia_id"],),
         ).fetchone()
     assert movimiento == [("ajuste_conteo", supervisor, supervisor)]
-    assert resolucion == (supervisor, 9, "Recuento con foto del anaquel")
+    assert resolucion == (supervisor, 9, "Recuento con foto del anaquel", "Ajuste de conteo validado (P4, P8)")
 
 
 def test_sobrante_validado_sube_existencias():
@@ -131,6 +131,11 @@ def test_d05_reparte_por_orden_de_compromiso_y_cancela_al_ultimo():
     assert respuesta.status_code == 200, respuesta.text
     assert (lineas_de(pedido_a)[producto]["k"], lineas_de(pedido_b)[producto]["k"]) == (0, 1)
     assert reembolsos_de(intento_a) == []
+    with pool.connection() as conn:
+        regla = conn.execute(
+            "SELECT regla_aplicada FROM resolucion_faltante WHERE discrepancia_id = %s", (conteo["discrepancia_id"],)
+        ).fetchone()[0]
+    assert regla.startswith("D-05")
     assert [r[1] for r in reembolsos_de(intento_b)] == [Decimal("100.00")]
     assert inventario(tienda, producto) == {"e": 8, "n": 0, "r": 0, "c": 8, "d": 0, "estado": "HABILITADO"}
     with pool.connection() as conn:
@@ -249,3 +254,26 @@ def test_validar_menos_que_las_reservas_activas_las_retira():
 
     assert inventario(tienda, producto) == {"e": 2, "n": 0, "r": 0, "c": 0, "d": 2, "estado": "HABILITADO"}
     assert historial_cuadra(tienda, producto)
+
+
+def test_validar_justo_lo_reservado_conserva_las_reservas():
+    tienda, producto, supervisor, conteo = diez_contra_ocho()
+
+    assert resolver(conteo["discrepancia_id"], supervisor, conteo["conteo_id"], 3).status_code == 200
+
+    assert inventario(tienda, producto) == {"e": 3, "n": 0, "r": 3, "c": 0, "d": 0, "estado": "HABILITADO"}
+
+
+def test_si_lo_validado_no_cubre_reservas_y_compromisos_primero_se_retiran_las_reservas():
+    tienda, (producto,) = tienda_con_productos(1, unidades=10)
+    pedido_id, _, intento_id = pedido_pagado(tienda, [(producto, 4)])
+    reservar(tienda, producto, 3)
+    picker, supervisor = nuevo_usuario(tienda, "PICKER"), nuevo_usuario(tienda, "SUPERVISOR")
+    conteo = contar(tienda, producto, picker, 8).json()
+    assert conteo["tipo_discrepancia"] == "DIFERENCIA_SIN_FALTANTE"
+
+    respuesta = resolver(conteo["discrepancia_id"], supervisor, conteo["conteo_id"], 6)
+
+    assert [(a["asignadas"], a["canceladas"]) for a in respuesta.json()["asignaciones"]] == [(4, 0)]
+    assert inventario(tienda, producto) == {"e": 6, "n": 0, "r": 0, "c": 4, "d": 2, "estado": "HABILITADO"}
+    assert reembolsos_de(intento_id) == []

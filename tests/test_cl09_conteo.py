@@ -134,3 +134,24 @@ def test_producto_inexistente_en_la_tienda_responde_404():
     respuesta = contar(tienda, uuid4(), picker, 3)
 
     assert respuesta.status_code == 404
+
+
+def test_contar_exactamente_lo_comprometido_es_diferencia_y_no_faltante():
+    tienda, (producto,) = tienda_con_productos(1, unidades=10)
+    pedido_pagado(tienda, [(producto, 8)])
+    picker = nuevo_usuario(tienda, "PICKER")
+
+    respuesta = contar(tienda, producto, picker, 8)
+
+    assert respuesta.json()["tipo_discrepancia"] == "DIFERENCIA_SIN_FALTANTE"
+    assert inventario(tienda, producto) == {"e": 8, "n": 2, "r": 0, "c": 8, "d": 0, "estado": "HABILITADO"}
+
+
+def test_una_sola_unidad_de_diferencia_tambien_pasa_a_revision():
+    tienda, (producto,) = tienda_con_productos(1, unidades=10)
+    picker = nuevo_usuario(tienda, "PICKER")
+
+    contar(tienda, producto, picker, 9)
+
+    assert (inventario(tienda, producto)["e"], inventario(tienda, producto)["n"]) == (9, 1)
+    assert historial_cuadra(tienda, producto)
