@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 import secrets
 from datetime import timedelta
 
@@ -13,6 +14,9 @@ from app.db import pool
 from app.errores import ErrorDeNegocio
 
 PORTALES = ("cliente", "interno")
+PREFIJO = "expressya_sesion_"
+VENTANA = re.compile(r"[A-Za-z0-9-]{1,64}")
+VENTANA_INVALIDA = ErrorDeNegocio(400, "SOLICITUD_INVALIDA", "El identificador de la pestaña (X-Ventana) no es válido.")
 DURACION = timedelta(hours=8)
 LECTURA = {"GET", "HEAD", "OPTIONS"}
 SIN_CSRF = ("/v1/auth/login", "/v1/auth/registro")
@@ -69,8 +73,15 @@ def encabezados_de_prueba() -> bool:
     return os.getenv("EXPRESSYA_ENCABEZADOS_DE_PRUEBA") == "1"
 
 
-def galleta(portal: str) -> str:
-    return f"expressya_sesion_{portal}"
+def ventana_de(cabeceras: Headers) -> str | None:
+    ventana = cabeceras.get("x-ventana")
+    if ventana is not None and not VENTANA.fullmatch(ventana):
+        raise VENTANA_INVALIDA
+    return ventana
+
+
+def galleta(portal: str, ventana: str | None = None) -> str:
+    return PREFIJO + portal + (f"_{ventana}" if ventana else "")
 
 
 def token_de(cabeceras: Headers) -> tuple[str | None, str | None]:
@@ -79,9 +90,11 @@ def token_de(cabeceras: Headers) -> tuple[str | None, str | None]:
         return autorizacion[7:].strip(), "bearer"
     galletas = dict(p.strip().split("=", 1) for p in cabeceras.get("cookie", "").split(";") if "=" in p)
     portal = cabeceras.get("x-portal")
-    presentes = [p for p in PORTALES if galleta(p) in galletas]
-    elegido = portal if portal in presentes else (presentes[0] if len(presentes) == 1 and portal is None else None)
-    return (galletas[galleta(elegido)], "cookie") if elegido else (None, None)
+    if portal is not None:
+        nombre = galleta(portal, ventana_de(cabeceras)) if portal in PORTALES else None
+        return (galletas[nombre], "cookie") if nombre in galletas else (None, None)
+    nuestras = [valor for nombre, valor in galletas.items() if nombre.startswith(PREFIJO)]
+    return (nuestras[0], "cookie") if len(nuestras) == 1 else (None, None)
 
 
 def rechazo(metodo: str, ruta: str, sesion: dict | None, via: str | None, cabeceras: Headers) -> ErrorDeNegocio | None:
@@ -114,7 +127,12 @@ class Autenticacion:
             await self.app(scope, receive, send)
             return
         cabeceras = Headers(scope=scope)
-        token, via = token_de(cabeceras)
+        try:
+            ventana_de(cabeceras)
+            token, via = token_de(cabeceras)
+        except ErrorDeNegocio as invalida:
+            await JSONResponse(status_code=invalida.estado_http, content=invalida.cuerpo())(scope, receive, send)
+            return
         sesion = await anyio.to_thread.run_sync(leer_sesion, token) if token else None
         error = rechazo(scope["method"], scope["path"], sesion, via, cabeceras)
         if error:

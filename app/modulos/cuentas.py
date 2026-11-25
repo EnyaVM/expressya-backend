@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from app.db import pool
 from app.errores import ErrorDeNegocio
 from app.seguridad import (DURACION, galleta, abrir_sesion, cerrar_sesion, cifrar_clave, clave_correcta,
-                           exigir_sesion)
+                           exigir_sesion, ventana_de)
 
 router = APIRouter(tags=["Cuentas y sesiones"])
 
@@ -112,7 +112,7 @@ def registrar(solicitud: RegistroSolicitud):
 
 
 @router.post("/v1/auth/login")
-def entrar(solicitud: LoginSolicitud, response: Response):
+def entrar(solicitud: LoginSolicitud, request: Request, response: Response):
     with pool.connection() as conn:
         fila = conn.execute("SELECT cuenta_id, clave_hash, tipo FROM cuenta WHERE usuario = %s AND activo",
                             (solicitud.usuario.strip().lower(),)).fetchone()
@@ -123,7 +123,7 @@ def entrar(solicitud: LoginSolicitud, response: Response):
         cuenta = describir(conn, fila[0]) | {"csrf": csrf}
     if solicitud.entregar_token:
         return cuenta | {"token": token}
-    response.set_cookie(galleta(solicitud.portal), token, max_age=int(DURACION.total_seconds()), httponly=True, samesite="strict", path="/")
+    response.set_cookie(galleta(solicitud.portal, ventana_de(request.headers)), token, max_age=int(DURACION.total_seconds()), httponly=True, samesite="strict", path="/")
     return cuenta
 
 
@@ -132,7 +132,7 @@ def salir(request: Request, response: Response):
     sesion = exigir_sesion(request)
     with pool.connection() as conn:
         cerrar_sesion(conn, request.scope["state"]["token"])
-    response.delete_cookie(galleta(sesion["portal"]), path="/")
+    response.delete_cookie(galleta(sesion["portal"], ventana_de(request.headers)), path="/")
     return {"estado": "cerrada"}
 
 
