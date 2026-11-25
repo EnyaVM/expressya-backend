@@ -12,7 +12,7 @@ from starlette.responses import JSONResponse
 from app.db import pool
 from app.errores import ErrorDeNegocio
 
-COOKIE = "expressya_sesion"
+PORTALES = ("cliente", "interno")
 DURACION = timedelta(hours=8)
 LECTURA = {"GET", "HEAD", "OPTIONS"}
 SIN_CSRF = ("/v1/auth/login", "/v1/auth/registro")
@@ -69,12 +69,19 @@ def encabezados_de_prueba() -> bool:
     return os.getenv("EXPRESSYA_ENCABEZADOS_DE_PRUEBA") == "1"
 
 
+def galleta(portal: str) -> str:
+    return f"expressya_sesion_{portal}"
+
+
 def token_de(cabeceras: Headers) -> tuple[str | None, str | None]:
     autorizacion = cabeceras.get("authorization", "")
     if autorizacion.lower().startswith("bearer "):
         return autorizacion[7:].strip(), "bearer"
     galletas = dict(p.strip().split("=", 1) for p in cabeceras.get("cookie", "").split(";") if "=" in p)
-    return (galletas[COOKIE], "cookie") if COOKIE in galletas else (None, None)
+    portal = cabeceras.get("x-portal")
+    presentes = [p for p in PORTALES if galleta(p) in galletas]
+    elegido = portal if portal in presentes else (presentes[0] if len(presentes) == 1 and portal is None else None)
+    return (galletas[galleta(elegido)], "cookie") if elegido else (None, None)
 
 
 def rechazo(metodo: str, ruta: str, sesion: dict | None, via: str | None, cabeceras: Headers) -> ErrorDeNegocio | None:
