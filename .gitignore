@@ -8,3 +8,6 @@ __pycache__/
 .vscode/
 .idea/
 *.log
+.coverage
+.metrics/
+target/

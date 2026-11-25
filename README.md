@@ -35,7 +35,7 @@ En la Terminal, dentro de esta carpeta:
 docker run --name expressya-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=expressya_db -p 5432:5432 -d postgres:16
 ```
 
-Espera unos segundos y carga los archivos de `db/` en orden (01, 02, 03, 90, 91, 92):
+Espera unos segundos y carga los archivos de `db/` en orden (01, 02, 03, 90, 91, 92, 93):
 
 ```bash
 docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/01_modelo_fisico_expressya.sql
@@ -44,6 +44,7 @@ docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP
 docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/90_datos_prueba.sql
 docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/91_datos_c1.sql
 docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/92_datos_c2.sql
+docker exec -i expressya-db psql -U postgres -d expressya_db --set=ON_ERROR_STOP=1 < db/93_datos_c3.sql
 ```
 
 Con eso quedan 5 Dark Stores, 5 productos de ropa con precio y 25 filas de inventario, cada una con su movimiento inicial.
@@ -224,6 +225,42 @@ Regla general: **ante la duda, nunca se cobra ni se devuelve dos veces.** Lo que
 
 Los 30 s de espera, el tope de 5 intentos por evento, la clave guardada en `intento_pago` y el cerrojo por `Clave-Operacion` son decisiones `PROPUESTA` del equipo, no requisitos del cliente.
 
+## 8. Evidencia del desafío C3
+
+Ruta de cada operación (cabeceras `Clave-Operacion` y `Usuario-Id`; repetir la misma clave devuelve la respuesta guardada):
+
+| Contrato | Ruta | Perfil en la tienda |
+|---|---|---|
+| CL-09 Conteo físico | `POST /v1/darkstores/{darkstore_id}/productos/{producto_id}/conteos` `{cantidad_contada, fecha_corte}` | Picker o Supervisor |
+| CL-10 Reporte de faltante | `POST /v1/lineas-pedido/{linea_id}/faltantes` `{evidencia}` | Picker o Personal de tienda |
+| CL-11 Retiro de reservas activas | interno, en la misma transacción que detecta el faltante | — |
+| CL-12 Resolución (D-05) | `POST /v1/discrepancias/{discrepancia_id}/resolucion` `{conteo_id, unidades_validadas, evidencia, motivo}` | Supervisor |
+
+| Requisito del desafío C3 / escenario | Prueba | Archivo |
+|---|---|---|
+| AT-07: 10 registradas, 8 contadas; incidencia registrada y disponibilidad incierta bloqueada | `test_at07_diez_registradas_ocho_contadas_deja_dos_en_revision`, `test_at07_resolver_la_diferencia_ajusta_existencias_y_libera_lo_que_estaba_en_revision` | `tests/test_cl09_conteo.py`, `tests/test_cl12_resolucion.py` |
+| AT-08: cinco líneas, una faltante; las otras cuatro continúan | `test_at08_las_otras_lineas_se_siguen_separando_y_la_faltante_no`, `test_at08_cinco_lineas_una_faltante_cancela_solo_lo_que_falta_y_las_otras_continuan` | `tests/test_cl10_faltante.py`, `tests/test_cl12_resolucion.py` |
+| Cancelación parcial y reembolso de lo faltante | `test_d05_reparte_por_orden_de_compromiso_y_cancela_al_ultimo`, `test_las_unidades_ya_separadas_se_quedan_con_su_pedido`, `test_faltante_total_cancela_la_linea_y_el_pedido_de_un_solo_producto` | `tests/test_cl12_resolucion.py` |
+| AT-09: reembolso parcial repetido aplicado una sola vez | `test_resolver_dos_veces_da_409_y_la_misma_clave_devuelve_la_respuesta_guardada`, `test_aplicar_dos_veces_el_mismo_faltante_no_duplica_el_reembolso` | `tests/test_cl12_resolucion.py`, `tests/test_cancelaciones.py` |
+| Historial: quién, qué, cuándo, por qué y cómo afectó al pedido | `test_la_resolucion_queda_en_el_historial_con_quien_la_autorizo`; `v_reconstruccion_saldos` cuadra en cada prueba (`historial_cuadra`) | `tests/test_cl12_resolucion.py` |
+| Perfiles por tienda (RBAC) | `test_sin_rol_de_conteo_en_la_tienda_responde_403`, `test_personal_de_tienda_puede_reportar_y_responsable_no`, `test_solo_el_supervisor_de_la_tienda_resuelve` | los tres archivos de C3 |
+
+Demo por Swagger (`/docs`) en Dark Store Sur (`11111111-1111-1111-1111-111111111112`) con la playera (`22222222-2222-2222-2222-222222222222`, E = 10):
+1. Checkout de 3 unidades con cualquier `Cliente-Id`: `E=10 R=3 D=7`.
+2. Conteo de 8 con el picker `44444444-4444-4444-4444-444444444444`: `E=8 N=2 D=5` y discrepancia `EN_VALIDACION`.
+3. Resolución con el supervisor `88888888-8888-8888-8888-888888888888` y `unidades_validadas = 9`: `E=9 N=0 D=6`.
+4. El historial del producto en la pantalla de Operación muestra el ajuste inicial, la reserva, la discrepancia (`en_revision`, quién contó) y la resolución (`ajuste_conteo`, quién autorizó).
+
+Decisiones `PROPUESTA` del equipo (trazadas a D-05, P4 y P8):
+- **Unidades en revisión:** si el conteo es menor que E, la diferencia pasa de E a N «en revisión» (P4, P8); si además no cubre reservas y compromisos, el producto se bloquea, las líneas pagadas pasan a `NO_SURTIBLE` y se retira de las reservas activas (D-05 pasos 1 y 2).
+- **Una sola regla de resolución:** `unidades_validadas` son las unidades físicas confirmadas; E queda en ese valor y las N en revisión se liberan, para faltante, diferencia o sobrante.
+- **Reparto D-05:** lo separado se conserva; el resto se asigna por `fecha_compromiso`, del más antiguo al más reciente; lo que no alcanza se cancela con su reembolso (pendiente de validación del cliente: orden de prioridad).
+- **Una discrepancia abierta por producto:** un conteo nuevo se agrega como evidencia; un reporte de faltante sobre una diferencia abierta la convierte en faltante.
+- **CL-11 síncrono:** el retiro de reservas ocurre en la misma transacción y el EV-03 se registra ya procesado.
+- **Rol de resolución:** `SUPERVISOR` (OpenAPI x-roles; rol candidato pendiente de validación).
+
+Límite declarado: si a un pedido en pago se le retira un producto por faltante, el monto cobrado puede superar el nuevo total; esa diferencia todavía no se reembolsa automáticamente.
+
 ## Estructura
 
 ```
@@ -239,6 +276,7 @@ app/
     pagos.py             M04 Pagos y reembolsos: CL-04, CL-05, CL-06, CL-16, CL-17 y recuperación de cobros y reembolsos
     pasarela_simulada.py simulador controlable de la pasarela
     cancelaciones.py     M03 Cancelaciones: CL-13 del cliente y cancelación por faltante tras CL-12
+    faltantes.py         M01 y M05: CL-09 conteo, CL-10 faltante, CL-11 retiro de reservas y CL-12 resolución (D-05)
     avisos.py            M06 Avisos: CL-18 con clave estable por origen
 static/
   index.html             la página del cliente
@@ -256,6 +294,11 @@ tests/
   test_avisos.py         CL-18: un aviso por origen
   test_e2e_c4.py         flujo completo: checkout, pago, faltante, cancelación, reembolso e historial
   test_robustez.py       caídas, clave reutilizada, eventos que fallan, montos inválidos y recuperación
+  escenarios_faltantes.py ayudantes de C3: usuarios con perfil, conteo, reporte y resolución por la API
+  test_cl09_conteo.py    CL-09: 10 contra 8, faltante, sobrante, repetición, perfiles
+  test_cl10_faltante.py  CL-10 y CL-11: bloqueo, NO_SURTIBLE, retiro de reservas, las demás líneas continúan
+  test_cl12_resolucion.py CL-12: ajuste, D-05 por fecha de compromiso, cancelación parcial y reembolso
+  test_at02_limite_300s.py AT-02: vigente a los 299 s y vencida a los 300 s
 db/
   01_modelo_fisico_expressya.sql DDL del SDD v1.1 (no se edita)
   02_precio_producto.sql         agrega el precio unitario al producto
@@ -263,6 +306,7 @@ db/
   90_datos_prueba.sql            datos semilla
   91_datos_c1.sql                5 tiendas, productos de ropa e inventario inicial
   92_datos_c2.sql                usuario operativo de prueba con rol RESPONSABLE
+  93_datos_c3.sql                supervisor y personal de tienda de prueba en las 5 tiendas
 evidencia/
   c1_resultados.txt              log reproducible de las pruebas de C1
   c2_resultados.txt              log reproducible de las pruebas de C2
