@@ -800,7 +800,7 @@ class VerificacionReembolsoSolicitud(BaseModel):
     evidencia: dict[str, Any]
 
 
-def _reembolso_en_verificacion(conn, reembolso_id: UUID) -> tuple:
+def _reembolso_en(conn, reembolso_id: UUID, estado_esperado: str, mensaje: str) -> tuple:
     fila = conn.execute(
         "SELECT r.intento_id, r.pedido_id, r.monto, r.motivo, r.referencia_externa, i.estado, i.reembolso_actual_id "
         "FROM reembolso r JOIN intento_pago i ON i.intento_id = r.intento_id WHERE r.reembolso_id = %s FOR UPDATE OF i, r",
@@ -808,15 +808,15 @@ def _reembolso_en_verificacion(conn, reembolso_id: UUID) -> tuple:
     ).fetchone()
     if fila is None:
         raise ErrorDeNegocio(404, "NO_ENCONTRADO", "El reembolso no existe.")
-    if fila[5] != "REEMBOLSO_EN_VERIFICACION" or fila[6] != reembolso_id:
-        raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE",
-                             f"El reembolso no está en REEMBOLSO_EN_VERIFICACION (estado actual: {fila[5]}).")
+    if fila[5] != estado_esperado or fila[6] != reembolso_id:
+        raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE", f"{mensaje} (estado actual: {fila[5]}).")
     return fila[:6]
 
 
 def _resolver_reembolso_manual(conn, reembolso_id: UUID, usuario: UUID, cuerpo, siguiente: list) -> dict[str, Any]:
     _exigir_rol_responsable(conn, usuario)
-    intento_id, pedido_id, monto, motivo, referencia, estado_previo = _reembolso_en_verificacion(conn, reembolso_id)
+    intento_id, pedido_id, monto, motivo, referencia, estado_previo = _reembolso_en(
+        conn, reembolso_id, "REEMBOLSO_EN_VERIFICACION", "El reembolso no está en REEMBOLSO_EN_VERIFICACION")
     conn.execute("UPDATE reembolso SET evidencia_revision = %s, responsable_revision = %s WHERE reembolso_id = %s",
                  (Jsonb(cuerpo.evidencia), usuario, reembolso_id))
     estado = _aplicar_resultado_reembolso(conn, reembolso_id=reembolso_id, resultado=cuerpo.resultado)
@@ -854,23 +854,10 @@ def verificar_reembolso_manual(
 # CL-17: Reintentar un reembolso
 # ==============================================================================
 
-def _reembolso_fallido(conn, reembolso_id: UUID) -> tuple:
-    fila = conn.execute(
-        "SELECT r.intento_id, r.pedido_id, r.monto, r.motivo, r.referencia_externa, i.estado, i.reembolso_actual_id "
-        "FROM reembolso r JOIN intento_pago i ON i.intento_id = r.intento_id WHERE r.reembolso_id = %s FOR UPDATE OF i, r",
-        (reembolso_id,),
-    ).fetchone()
-    if fila is None:
-        raise ErrorDeNegocio(404, "NO_ENCONTRADO", "El reembolso no existe.")
-    if fila[5] != "REEMBOLSO_FALLIDO" or fila[6] != reembolso_id:
-        raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE",
-                             f"Solo se puede reintentar desde REEMBOLSO_FALLIDO (estado actual: {fila[5]}).")
-    return fila[:5]
-
-
 def _preparar_reintento(conn, reembolso_id: UUID, usuario: UUID) -> dict[str, Any]:
     _exigir_rol_responsable(conn, usuario)
-    intento_id, pedido_id, monto, motivo, referencia = _reembolso_fallido(conn, reembolso_id)
+    intento_id, pedido_id, monto, motivo, referencia, _ = _reembolso_en(
+        conn, reembolso_id, "REEMBOLSO_FALLIDO", "Solo se puede reintentar desde REEMBOLSO_FALLIDO")
     conn.execute("UPDATE reembolso SET fecha_envio = NULL, fecha_fallo_confirmado = NULL WHERE reembolso_id = %s", (reembolso_id,))
     conn.execute("UPDATE intento_pago SET estado = 'REEMBOLSO_EN_PROCESO' WHERE intento_id = %s", (intento_id,))
     return {
