@@ -250,3 +250,20 @@ def test_activar_una_cuenta_ya_activa_no_cierra_su_sesion():
     cuenta_id = cliente.get("/v1/auth/me").json()["cuenta_id"]
     assert admin.patch(f"/v1/admin/cuentas/{cuenta_id}", json={"activo": True}).status_code == 200
     assert cliente.get("/v1/auth/me").status_code == 200
+
+
+def test_tienda_e_interno_conservan_su_propia_sesion_en_el_mismo_navegador():
+    tienda, _ = tienda_con_productos(1)
+    navegador = TestClient(app)
+    cliente = navegador.post("/v1/auth/login", json={"usuario": cuenta("CLIENTE"), "clave": CLAVE, "portal": "cliente"}).json()
+    picker = navegador.post("/v1/auth/login", json={"usuario": cuenta("INTERNO", [(tienda, "PICKER")]), "clave": CLAVE,
+                                                    "portal": "interno"}).json()
+
+    yo_cliente = navegador.get("/v1/auth/me", headers={"X-Portal": "cliente"}).json()
+    yo_interno = navegador.get("/v1/auth/me", headers={"X-Portal": "interno"}).json()
+    salida = navegador.post("/v1/auth/logout", json={}, headers={"X-Portal": "interno", "X-CSRF-Token": picker["csrf"]})
+
+    assert (yo_cliente["cuenta_id"], yo_interno["cuenta_id"]) == (cliente["cuenta_id"], picker["cuenta_id"])
+    assert salida.status_code == 200
+    assert navegador.get("/v1/auth/me", headers={"X-Portal": "interno"}).status_code == 401
+    assert navegador.get("/v1/auth/me", headers={"X-Portal": "cliente"}).json()["cuenta_id"] == cliente["cuenta_id"]

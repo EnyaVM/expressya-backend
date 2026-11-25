@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.db import pool
 from app.errores import ErrorDeNegocio
-from app.seguridad import (COOKIE, DURACION, abrir_sesion, cerrar_sesion, cifrar_clave, clave_correcta,
+from app.seguridad import (DURACION, galleta, abrir_sesion, cerrar_sesion, cifrar_clave, clave_correcta,
                            exigir_sesion)
 
 router = APIRouter(tags=["Cuentas y sesiones"])
@@ -123,16 +123,16 @@ def entrar(solicitud: LoginSolicitud, response: Response):
         cuenta = describir(conn, fila[0]) | {"csrf": csrf}
     if solicitud.entregar_token:
         return cuenta | {"token": token}
-    response.set_cookie(COOKIE, token, max_age=int(DURACION.total_seconds()), httponly=True, samesite="strict", path="/")
+    response.set_cookie(galleta(solicitud.portal), token, max_age=int(DURACION.total_seconds()), httponly=True, samesite="strict", path="/")
     return cuenta
 
 
 @router.post("/v1/auth/logout")
 def salir(request: Request, response: Response):
-    exigir_sesion(request)
+    sesion = exigir_sesion(request)
     with pool.connection() as conn:
         cerrar_sesion(conn, request.scope["state"]["token"])
-    response.delete_cookie(COOKIE, path="/")
+    response.delete_cookie(galleta(sesion["portal"]), path="/")
     return {"estado": "cerrada"}
 
 

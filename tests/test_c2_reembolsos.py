@@ -22,8 +22,15 @@ def restaurar_pasarela():
     pasarela_simulada.reiniciar_simulador()
 
 
+def _con_responsable(darkstore_id) -> None:
+    with pool.connection() as conn:
+        conn.execute("INSERT INTO asignacion_rol (usuario_id, darkstore_id, rol) VALUES (%s, %s, 'RESPONSABLE') "
+                     "ON CONFLICT DO NOTHING", (USUARIO_RESPONSABLE, darkstore_id))
+
+
 def _preparar_intento_aprobado(monto: Decimal = Decimal("200.00")):
     darkstore_id, producto_id = preparar_escenario(5)
+    _con_responsable(darkstore_id)
     cliente_id = nuevo_cliente()
     with pool.connection() as conn:
         res = crear_checkout(
@@ -113,6 +120,7 @@ def test_reembolso_sin_respuesta_queda_en_verificacion_sin_reenviar_y_el_segundo
 
 def test_cl06_resuelve_un_cobro_en_verificacion_con_evidencia():
     darkstore_id, producto_id = preparar_escenario(5)
+    _con_responsable(darkstore_id)
     cliente_id = nuevo_cliente()
     with pool.connection() as conn:
         res = crear_checkout(
