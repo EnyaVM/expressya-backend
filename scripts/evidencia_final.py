@@ -126,8 +126,14 @@ def ambiente() -> list[str]:
             f"psycopg {version('psycopg')}, pytest {version('pytest')}"]
 
 
+def conteo_junit() -> tuple[int, int]:
+    raiz = ET.parse(JUNIT).getroot()
+    suite = raiz if raiz.tag == "testsuite" else raiz.find("testsuite")
+    return int(suite.get("tests")), int(suite.get("failures")) + int(suite.get("errors"))
+
+
 def generar(obtenidos: dict[str, str]) -> str:
-    totales = list(obtenidos.values())
+    casos, fallas = conteo_junit()
     filas = [f"| {i} | {req} | {dis} | `{cod}` ({cl}) | {'<br>'.join(f'`{p}`' for p in pr)} | Automatizada | {resultado_de(pr, obtenidos)} |"
              for i, req, dis, cod, cl, pr in CASOS]
     return "\n".join([
@@ -136,7 +142,7 @@ def generar(obtenidos: dict[str, str]) -> str:
         "Generada por `python -m scripts.evidencia_final` sobre una base reconstruida desde `db/*.sql`.",
         "",
         *ambiente(),
-        f"- Suite completa: {totales.count('PASA')} pasan, {totales.count('FALLA')} fallan, de {len(totales)}",
+        f"- Suite completa: {casos - fallas} de {casos} casos pasan ({fallas} fallan)",
         "",
         "| ID | Requisito | Diseño | Código (contrato) | Pruebas | Tipo | Resultado |",
         "|---|---|---|---|---|---|---|",
