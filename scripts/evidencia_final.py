@@ -88,10 +88,12 @@ CASOS = [
      ["test_cuentas.py::test_sin_sesion_un_id_de_cliente_inventado_no_sirve",
       "test_cuentas.py::test_con_sesion_no_se_puede_suplantar_a_otro_cliente",
       "test_cuentas.py::test_administracion_consulta_todo_pero_no_opera"]),
-    ("SEG-02", "Perfiles por tienda y administración de cuentas auditada",
+    ("SEG-02", "Perfiles validados en la tienda del pedido, sesiones por portal y cuentas auditadas",
      "asignacion_rol, auditoria_cuenta", "cuentas.dar_de_alta, cuentas.cambiar_acceso", "Cuentas",
      ["test_cuentas.py::test_administracion_da_de_alta_personal_con_perfiles_y_queda_auditado",
-      "test_cuentas.py::test_desactivar_una_cuenta_corta_su_sesion_abierta"]),
+      "test_cuentas.py::test_desactivar_una_cuenta_corta_su_sesion_abierta",
+      "test_permisos_por_tienda.py::test_un_responsable_de_otra_tienda_no_aprueba_el_pago",
+      "test_cuentas.py::test_tienda_e_interno_conservan_su_propia_sesion_en_el_mismo_navegador"]),
 ]
 
 
