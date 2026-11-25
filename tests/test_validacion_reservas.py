@@ -40,3 +40,15 @@ def test_identificacion_temporal_invalida_da_401(ruta, cliente_id):
     respuesta = cliente_http.post(ruta, headers=cabeceras, json={})
     assert respuesta.status_code == 401
     assert respuesta.json()["codigo"] == "NO_AUTENTICADO"
+
+
+def test_un_cliente_inexistente_no_gasta_la_clave():
+    from escenarios import nuevo_cliente, preparar_escenario
+
+    tienda, producto = preparar_escenario(3)
+    clave = str(uuid4())
+    cuerpo = {"darkstore_id": str(tienda), "lineas": [{"producto_id": str(producto), "cantidad": 1}]}
+    falso = cliente_http.post("/v1/checkouts", headers={"Clave-Operacion": clave, "Cliente-Id": str(uuid4())}, json=cuerpo)
+    real = cliente_http.post("/v1/checkouts", headers={"Clave-Operacion": clave, "Cliente-Id": str(nuevo_cliente())}, json=cuerpo)
+    assert falso.status_code == 401
+    assert real.status_code == 201

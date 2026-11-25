@@ -392,3 +392,21 @@ def test_cl08_registra_movimiento_auditable():
         ("C", -2),
         ("E", -2),
     ]
+
+
+def test_cl08_responde_en_la_ruta_del_contrato_openapi():
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    rutas = {r.path for r in app.routes}
+    assert "/v1/lineas-pedido/{linea_id}/separaciones" in rutas
+    assert "/v1/lineas-pedido/{linea_id}/separaciones" in TestClient(app).get("/openapi.json").json()["paths"]
+
+
+def test_estado_de_la_linea_tras_separar():
+    from app.modulos.pedidos import estado_tras_separar
+
+    assert estado_tras_separar(q=3, s=3, k=0) == "SEPARADA"
+    assert estado_tras_separar(q=3, s=2, k=1) == "PARCIAL"
+    assert estado_tras_separar(q=3, s=1, k=1) == "ASIGNADA"

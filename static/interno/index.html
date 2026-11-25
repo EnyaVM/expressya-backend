@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="es" data-portal="interno">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#f5f5f7">
+<link rel="icon" href="data:,">
+<title>ExpressYa — Área interna</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/comun.css">
+<script src="/js/comun.js" defer></script>
+<script src="/js/prendas.js" defer></script>
+<script src="/js/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Saltar al contenido</a>
+<header>
+  <nav aria-label="Navegación principal">
+    <a href="#" data-view="inicio" class="brand">express<span>ya</span><i>®</i></a>
+    <div class="navlinks">
+      <button data-view="tienda" class="nav" data-portal-only="cliente">Tienda</button>
+      <button data-view="pedidos" class="nav" data-portal-only="cliente">Mis pedidos</button>
+      <button data-view="operacion" class="nav" data-portal-only="interno" data-requiere="sesion">Operación</button>
+      <button data-view="cuentas" class="nav" data-portal-only="interno" data-requiere="admin">Cuentas y perfiles</button>
+      <button data-view="auditoria" class="nav" data-portal-only="interno" data-requiere="admin">Auditoría</button>
+    </div>
+    <div class="nav-right">
+      <button id="cuenta-btn" class="account-button">Iniciar sesión</button>
+      <button id="bag" class="bag" aria-label="Abrir bolsa" data-portal-only="cliente">Bolsa <span id="bag-count">0</span></button>
+    </div>
+  </nav>
+</header>
+<div class="environment">
+  <span data-portal-only="cliente">Prototipo académico</span>
+  <span data-portal-only="interno">Área interna · Prototipo académico</span>
+  <span>Pago con pasarela de prueba: no se hace ningún cargo real.</span>
+  <a class="quiet-link" href="/interno/" data-portal-only="cliente">Acceso de personal</a>
+  <a class="quiet-link" href="/" data-portal-only="interno">Ir a la tienda</a>
+  <button id="settings-open" data-portal-only="interno" data-requiere="admin" hidden>Pasarela de prueba</button>
+</div>
+<div id="pendiente-banner" class="pending-banner" hidden>
+  <p>Una operación de tu cuenta quedó sin respuesta. Recupera su resultado antes de iniciar otra.</p>
+  <button id="recuperar" class="secondary" data-mutate>Recuperar operación</button>
+</div>
+<main id="main">
+  <section id="view-tienda" class="view" hidden>
+    <div class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">MENOS ESPERA. MÁS ESTILO.</p>
+        <h1>Lo quieres.<br><span>Lo tienes.</span></h1>
+        <p class="hero-description">Tus esenciales, a un checkout de distancia. <br>Compra lo que sí está disponible.</p>
+        <a class="primary" href="#catalogo">Explorar colección</a>
+        <p class="hero-foot">Elige. Reserva. Hazlo tuyo.</p>
+      </div>
+      <div class="hero-art" id="hero-art" aria-hidden="true"></div>
+    </div>
+    <section id="catalogo" class="collection wrap">
+      <div class="section-heading">
+        <div><p class="eyebrow">LA COLECCIÓN</p><h2>Esenciales. Sin complicaciones.</h2></div>
+        <label class="store-label">Tu tienda<select id="store" aria-label="Seleccionar tienda"></select></label>
+      </div>
+      <div class="category-row">
+        <div id="filters" class="pills">
+          <button class="selected" data-filter="todos">Todo</button>
+          <button data-filter="superior">Tops y abrigos</button>
+          <button data-filter="inferior">Denim</button>
+          <button data-filter="accesorios">Accesorios</button>
+        </div>
+        <span id="catalog-status" class="muted">Consultando disponibilidad…</span>
+      </div>
+      <div id="products" class="products"></div>
+    </section>
+    <section class="promise wrap">
+      <div><span class="promise-icon">✓</span><h3>Disponibilidad al momento.</h3><p>Una tienda, un pedido. El stock se comprueba al reservar.</p></div>
+      <div><span class="promise-icon">◷</span><h3>Cinco minutos para decidir.</h3><p>Al confirmar tu bolsa, tus prendas quedan reservadas durante 300 segundos.</p></div>
+      <div><span class="promise-icon">↺</span><h3>Tu pedido, bajo control.</h3><p>Consulta el pago, la preparación y las devoluciones desde tu cuenta.</p></div>
+    </section>
+  </section>
+
+  <section id="view-pedidos" class="view wrap page" hidden>
+    <p class="eyebrow">TU CUENTA</p>
+    <div class="section-heading"><h1>Todo, en su lugar.</h1><button id="refresh-orders" class="secondary">Actualizar pedidos</button></div>
+    <p class="lead">Sigue tu compra, revisa tu pago y consulta tus avisos.</p>
+    <div id="orders" class="order-list"></div>
+  </section>
+
+  <section id="view-acceso" class="view wrap page" hidden>
+    <div class="login-page">
+      <p class="eyebrow">ÁREA INTERNA</p>
+      <h1>Todo en orden.</h1>
+      <p class="lead">Entra con la cuenta que te asignó administración. Verás solo las tiendas y funciones de tus perfiles.</p>
+      <form id="form-interno" class="auth-form panel" autocomplete="on">
+        <label>Usuario<input name="usuario" autocomplete="username" required minlength="3" maxlength="100"></label>
+        <label>Contraseña<input name="clave" type="password" autocomplete="current-password" required maxlength="128"></label>
+        <button class="primary full">Iniciar sesión</button>
+        <p class="form-error" role="alert" hidden></p>
+      </form>
+      <p class="small">¿Eres cliente? <a class="text-link" href="/">Ve a la tienda</a>.</p>
+    </div>
+  </section>
+
+  <section id="view-operacion" class="view wrap page" hidden>
+    <p class="eyebrow">DETRÁS DE CADA PEDIDO</p>
+    <div class="section-heading"><h1>Todo en orden.</h1><button id="refresh-ops" class="secondary">Actualizar operación</button></div>
+    <p class="lead" id="ops-lead">Prepara pedidos y consulta el inventario de tu tienda.</p>
+    <div class="ops-toolbar">
+      <label>Tienda<select id="ops-store"></select></label>
+      <div class="identity-card"><span class="small">Tus perfiles en esta tienda</span><div id="ops-roles" class="chips"></div></div>
+    </div>
+    <div id="ops-content"></div>
+  </section>
+
+  <section id="view-cuentas" class="view wrap page" hidden>
+    <p class="eyebrow">ADMINISTRACIÓN</p>
+    <div class="section-heading"><h1>Cuentas y perfiles.</h1><button id="refresh-accounts" class="secondary">Actualizar cuentas</button></div>
+    <p class="lead">Da de alta personal con su perfil y tienda, o activa y desactiva accesos. Administración no realiza operaciones de tienda en nombre de otra persona.</p>
+    <div class="admin-grid">
+      <section class="panel">
+        <div class="row"><h2>Cuentas</h2><input id="accounts-filter" type="search" placeholder="Buscar por usuario, nombre o perfil" aria-label="Buscar cuentas"></div>
+        <div id="accounts" class="table-scroll"></div>
+      </section>
+      <form id="form-alta" class="panel form-block-plain">
+        <h2>Nueva cuenta</h2>
+        <label>Tipo<select name="tipo"><option value="INTERNO">Personal de tienda</option><option value="CLIENTE">Cliente</option></select></label>
+        <label>Nombre<input name="nombre" required minlength="2" maxlength="100"></label>
+        <label>Usuario<input name="usuario" required minlength="3" maxlength="100" pattern="[a-zA-Z0-9_.@+\-]+" title="Letras, números y . _ @ + -" autocomplete="off"></label>
+        <label>Contraseña inicial<input name="clave" type="password" required minlength="10" maxlength="128" autocomplete="new-password"></label>
+        <fieldset id="alta-asignaciones" class="assignments">
+          <legend>Perfiles por tienda</legend>
+          <div id="alta-filas"></div>
+          <button type="button" id="alta-agregar" class="link">+ Agregar perfil</button>
+        </fieldset>
+        <button class="primary full">Crear cuenta</button>
+        <p class="small">La contraseña no se vuelve a mostrar. Compártela con la persona por un canal seguro.</p>
+      </form>
+    </div>
+  </section>
+
+  <section id="view-auditoria" class="view wrap page" hidden>
+    <p class="eyebrow">ADMINISTRACIÓN</p>
+    <div class="section-heading"><h1>Auditoría de accesos.</h1><button id="refresh-audit" class="secondary">Actualizar</button></div>
+    <p class="lead">Altas y cambios de acceso registrados por el servidor.</p>
+    <div id="audit" class="table-scroll panel"></div>
+  </section>
+</main>
+<footer class="wrap">
+  <a class="brand" data-view="inicio" href="#">express<span>ya</span></a>
+  <p>Ingeniería de Software · Equipo 03</p>
+  <span id="connection">Conectando con ExpressYa…</span>
+</footer>
+
+<dialog id="drawer" class="drawer">
+  <div class="dialog-header"><p class="eyebrow" id="drawer-kicker">TU BOLSA</p><button class="icon-button" data-close="drawer" aria-label="Cerrar panel">×</button></div>
+  <div id="drawer-content"></div>
+</dialog>
+
+<dialog id="acceso" class="settings auth-dialog" aria-labelledby="acceso-titulo">
+  <div class="dialog-header"><p class="eyebrow">TU CUENTA EXPRESSYA</p><button class="icon-button" data-close="acceso" aria-label="Cerrar">×</button></div>
+  <h2 id="acceso-titulo">Entra para continuar.</h2>
+  <p id="acceso-motivo" class="muted">Tu bolsa se conserva mientras inicias sesión.</p>
+  <div class="segmented" role="tablist">
+    <button role="tab" type="button" data-tab="entrar" class="selected" aria-selected="true">Iniciar sesión</button>
+    <button role="tab" type="button" data-tab="registro" aria-selected="false">Crear cuenta</button>
+  </div>
+  <form id="form-entrar" class="auth-form" autocomplete="on">
+    <label>Usuario<input name="usuario" autocomplete="username" required minlength="3" maxlength="100"></label>
+    <label>Contraseña<input name="clave" type="password" autocomplete="current-password" required maxlength="128"></label>
+    <button class="primary full">Iniciar sesión</button>
+  </form>
+  <form id="form-registro" class="auth-form" hidden autocomplete="on">
+    <label>Nombre<input name="nombre" autocomplete="name" required minlength="2" maxlength="100"></label>
+    <label>Usuario<input name="usuario" autocomplete="username" required minlength="3" maxlength="100" pattern="[a-zA-Z0-9_.@+\-]+" title="Letras, números y . _ @ + -"></label>
+    <label>Contraseña<input name="clave" type="password" autocomplete="new-password" required minlength="10" maxlength="128"></label>
+    <label>Confirma tu contraseña<input name="confirmacion" type="password" autocomplete="new-password" required minlength="10" maxlength="128"></label>
+    <p class="small">Mínimo 10 caracteres. El usuario admite letras, números y . _ @ + -</p>
+    <button class="primary full">Crear cuenta</button>
+  </form>
+  <p id="acceso-error" class="form-error" role="alert" hidden></p>
+</dialog>
+
+<dialog id="mi-cuenta" class="settings">
+  <div class="dialog-header"><p class="eyebrow">TU CUENTA</p><button class="icon-button" data-close="mi-cuenta" aria-label="Cerrar">×</button></div>
+  <h2 id="mi-cuenta-nombre"></h2>
+  <p class="muted" id="mi-cuenta-usuario"></p>
+  <div id="mi-cuenta-perfiles" class="chips"></div>
+  <div class="actions"><button id="salir" class="primary">Cerrar sesión</button></div>
+</dialog>
+
+<dialog id="settings" class="settings">
+  <div class="dialog-header"><p class="eyebrow">ENTORNO DE PRUEBA</p><button class="icon-button" data-close="settings" aria-label="Cerrar controles">×</button></div>
+  <h2>Tú diriges la prueba.</h2>
+  <p>Estos controles cambian la respuesta de la pasarela de prueba del backend. Solo administración puede usarlos y solo en el entorno de demostración.</p>
+  <label>Al cobrar<select id="pay-mode"><option value="APROBAR">Aprobar el pago</option><option value="RECHAZAR">Rechazar el pago</option><option value="NO_RESPONDER">Dejar el pago en verificación</option></select></label>
+  <label>Al reembolsar<select id="refund-mode"><option value="CONFIRMAR">Confirmar devolución</option><option value="FALLAR">Confirmar fallo</option><option value="NO_RESPONDER">Dejar devolución en verificación</option></select></label>
+  <button id="save-modes" class="primary">Guardar configuración</button>
+</dialog>
+
+<div id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

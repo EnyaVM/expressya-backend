@@ -80,274 +80,123 @@ def _reembolso_total_de(cur, intento_id: UUID) -> UUID:
     return cur.fetchone()[0]
 
 
-def cancelar_pedido_cliente(
-    conn,
-    pedido_id: UUID,
-    cliente_id: UUID,
-    motivo: str,
-    clave_operacion: UUID,
-) -> tuple[dict, UUID | None]:
-    from app.modulos.pagos import solicitar_reembolso
+def _pedido_del_cliente(cur, pedido_id: UUID, cliente_id: UUID) -> tuple:
+    cur.execute("SELECT reserva_id, cliente_id, darkstore_id, estado, total_vigente, intento_aplicado_id FROM pedido "
+                "WHERE pedido_id = %s FOR UPDATE", (pedido_id,))
+    fila = cur.fetchone()
+    if fila is None or fila[1] != cliente_id:
+        raise ErrorDeNegocio(404, "NO_ENCONTRADO", "El pedido no existe o no pertenece al cliente.")
+    if fila[3] != "CONFIRMADO":
+        raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE", f"El pedido está en estado {fila[3]} y no admite cancelación.")
+    return fila[0], fila[2], fila[4], fila[5]
 
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT reserva_id, cliente_id, darkstore_id, estado, total_vigente, intento_aplicado_id
-            FROM pedido
-            WHERE pedido_id = %s
-            FOR UPDATE
-            """,
-            (pedido_id,),
-        )
-        fila = cur.fetchone()
-        if fila is None or fila[1] != cliente_id:
-            raise ErrorDeNegocio(404, "NO_ENCONTRADO", "El pedido no existe o no pertenece al cliente.")
-        reserva_id, _, darkstore_id, estado, total_vigente, intento_id = fila
-        if estado != "CONFIRMADO":
-            raise ErrorDeNegocio(
-                409,
-                "ESTADO_INCOMPATIBLE",
-                f"El pedido está en estado {estado} y no admite cancelación.",
-            )
 
-        cur.execute(
-            "SELECT producto_id FROM linea_pedido WHERE pedido_id = %s ORDER BY producto_id",
-            (pedido_id,),
-        )
-        _bloquear_inventario(cur, darkstore_id, [f[0] for f in cur.fetchall()])
+def _lineas_sin_preparar(cur, pedido_id: UUID, darkstore_id: UUID) -> list[tuple]:
+    cur.execute("SELECT producto_id FROM linea_pedido WHERE pedido_id = %s ORDER BY producto_id", (pedido_id,))
+    _bloquear_inventario(cur, darkstore_id, [f[0] for f in cur.fetchall()])
+    cur.execute("SELECT linea_id, producto_id, q, s, k, estado FROM linea_pedido WHERE pedido_id = %s ORDER BY linea_id FOR UPDATE",
+                (pedido_id,))
+    lineas = cur.fetchall()
+    if any(s > 0 for _, _, _, s, _, _ in lineas):
+        raise ErrorDeNegocio(409, "PREPARACION_INICIADA", "La preparación del pedido ya inició; el cliente ya no puede cancelarlo.")
+    if any(estado not in ("ASIGNADA", "CANCELADA") for *_, estado in lineas):
+        raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE", "El pedido tiene una línea con un faltante en validación; se resuelve con D-05.")
+    return [l for l in lineas if l[2] - l[4] > 0]
 
-        cur.execute(
-            """
-            SELECT linea_id, producto_id, q, s, k, estado
-            FROM linea_pedido
-            WHERE pedido_id = %s
-            ORDER BY linea_id
-            FOR UPDATE
-            """,
-            (pedido_id,),
-        )
-        lineas = [fila[:5] for fila in cur.fetchall()]
-        if any(s > 0 for _, _, _, s, _ in lineas):
-            raise ErrorDeNegocio(
-                409,
-                "PREPARACION_INICIADA",
-                "La preparación del pedido ya inició; el cliente ya no puede cancelarlo.",
-            )
-        cur.execute(
-            "SELECT count(*) FROM linea_pedido WHERE pedido_id = %s AND estado NOT IN ('ASIGNADA', 'CANCELADA')",
-            (pedido_id,),
-        )
-        if cur.fetchone()[0] > 0:
-            raise ErrorDeNegocio(
-                409,
-                "ESTADO_INCOMPATIBLE",
-                "El pedido tiene una línea con un faltante en validación; se resuelve con D-05.",
-            )
 
-        for linea_id, producto_id, q, s, k in lineas:
-            pendiente = q - s - k
-            if pendiente == 0:
-                continue
-            cur.execute(
-                """
-                UPDATE linea_pedido SET k = q, estado = 'CANCELADA'
-                WHERE linea_id = %s AND estado = 'ASIGNADA' AND s + k + %s <= q
-                """,
-                (linea_id, pendiente),
-            )
-            if cur.rowcount != 1:
-                raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE", "La línea cambió de estado; intenta de nuevo.")
-            _registrar_movimiento_cancelacion(
-                cur,
-                darkstore_id,
-                producto_id,
-                pendiente,
-                f"Cancelación del cliente: {motivo}",
-                clave_operacion,
-                reserva_id,
-                linea_id,
-            )
-
-        cur.execute(
-            "UPDATE pedido SET estado = 'CANCELADO', total_vigente = 0 WHERE pedido_id = %s",
-            (pedido_id,),
-        )
-
-        reembolso_a_enviar = None
-        reembolso_id = None
-        if total_vigente > 0:
-            reembolso_a_enviar = solicitar_reembolso(conn, intento_id, total_vigente, "CANCELACION_CLIENTE")
-            reembolso_id = _reembolso_total_de(cur, intento_id)
-
-        registrar_aviso(
-            conn,
-            tipo="PEDIDO_CANCELADO",
-            origen_tipo="PEDIDO",
-            origen_id=pedido_id,
-            cliente_id=cliente_id,
-            pedido_id=pedido_id,
-        )
-
-    cuerpo = {
-        "pedido_id": str(pedido_id),
-        "estado": "CANCELADO",
-        "total_vigente": "0.00",
-        "ajuste_pendiente": reembolso_id is not None,
-        "reembolso_id": str(reembolso_id) if reembolso_id else None,
-        "monto_reembolso": f"{total_vigente:.2f}",
-    }
-    resultado = {
+def _respuesta_cancelacion(pedido_id: UUID, total, reembolso_id: UUID | None) -> dict:
+    return {
         "estado_http": 200,
-        "cuerpo": cuerpo,
-        "estado_anterior": {"pedido": "CONFIRMADO", "total_vigente": f"{total_vigente:.2f}"},
+        "cuerpo": {"pedido_id": str(pedido_id), "estado": "CANCELADO", "total_vigente": "0.00",
+                   "ajuste_pendiente": reembolso_id is not None,
+                   "reembolso_id": str(reembolso_id) if reembolso_id else None, "monto_reembolso": f"{total:.2f}"},
+        "estado_anterior": {"pedido": "CONFIRMADO", "total_vigente": f"{total:.2f}"},
         "estado_resultante": {"pedido": "CANCELADO", "total_vigente": "0.00"},
     }
-    return resultado, reembolso_a_enviar
 
 
-def cancelar_cantidad_por_faltante(
-    conn,
-    resolucion_id: UUID,
-    linea_id: UUID,
-    usuario_id: UUID,
-    clave_operacion: UUID,
-) -> UUID | None:
+def cancelar_pedido_cliente(conn, pedido_id: UUID, cliente_id: UUID, motivo: str,
+                            clave_operacion: UUID) -> tuple[dict, UUID | None]:
     from app.modulos.pagos import solicitar_reembolso
 
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT a.canceladas, lp.pedido_id
-            FROM asignacion_faltante a
-            JOIN linea_pedido lp USING (linea_id)
-            WHERE a.resolucion_id = %s AND a.linea_id = %s
-            """,
-            (resolucion_id, linea_id),
-        )
-        fila = cur.fetchone()
-        if fila is None:
-            raise ErrorDeNegocio(404, "NO_ENCONTRADO", "No existe la asignación del faltante para esa línea.")
-        cantidad, pedido_id = fila
-        if cantidad == 0:
+        reserva_id, darkstore_id, total, intento_id = _pedido_del_cliente(cur, pedido_id, cliente_id)
+        for linea_id, producto_id, q, _, k, _ in _lineas_sin_preparar(cur, pedido_id, darkstore_id):
+            cur.execute("UPDATE linea_pedido SET k = q, estado = 'CANCELADA' WHERE linea_id = %s", (linea_id,))
+            _registrar_movimiento_cancelacion(cur, darkstore_id, producto_id, q - k, f"Cancelación del cliente: {motivo}",
+                                              clave_operacion, reserva_id, linea_id)
+        cur.execute("UPDATE pedido SET estado = 'CANCELADO', total_vigente = 0 WHERE pedido_id = %s", (pedido_id,))
+        por_enviar = solicitar_reembolso(conn, intento_id, total, "CANCELACION_CLIENTE")
+        reembolso_id = _reembolso_total_de(cur, intento_id)
+        registrar_aviso(conn, tipo="PEDIDO_CANCELADO", origen_tipo="PEDIDO", origen_id=pedido_id,
+                        cliente_id=cliente_id, pedido_id=pedido_id)
+    return _respuesta_cancelacion(pedido_id, total, reembolso_id), por_enviar
+
+
+def estado_tras_cancelar(q: int, s: int, k: int, estado: str) -> str:
+    if s + k != q:
+        return estado
+    return "CANCELADA" if s == 0 else "PARCIAL"
+
+
+def _asignacion_pendiente(cur, resolucion_id: UUID, linea_id: UUID) -> tuple | None:
+    cur.execute("SELECT a.canceladas, lp.pedido_id FROM asignacion_faltante a JOIN linea_pedido lp USING (linea_id) "
+                "WHERE a.resolucion_id = %s AND a.linea_id = %s", (resolucion_id, linea_id))
+    fila = cur.fetchone()
+    if fila is None:
+        raise ErrorDeNegocio(404, "NO_ENCONTRADO", "No existe la asignación del faltante para esa línea.")
+    if fila[0] == 0:
+        return None
+    cur.execute("SELECT reserva_id, cliente_id, darkstore_id, estado, intento_aplicado_id FROM pedido WHERE pedido_id = %s FOR UPDATE",
+                (fila[1],))
+    pedido = cur.fetchone()
+    cur.execute("SELECT 1 FROM cancelacion_linea WHERE resolucion_id = %s AND linea_id = %s", (resolucion_id, linea_id))
+    if cur.fetchone() is not None:
+        return None
+    if pedido[3] != "CONFIRMADO":
+        raise ErrorDeNegocio(409, "ESTADO_INCOMPATIBLE", f"El pedido está en estado {pedido[3]} y no admite cancelación por faltante.")
+    return fila[0], fila[1], pedido
+
+
+def _restar_de_la_linea(cur, linea_id: UUID, darkstore_id: UUID, cantidad: int) -> tuple[UUID, Decimal]:
+    cur.execute("SELECT producto_id FROM linea_pedido WHERE linea_id = %s", (linea_id,))
+    producto_id = cur.fetchone()[0]
+    _bloquear_inventario(cur, darkstore_id, [producto_id])
+    cur.execute("SELECT q, s, k, precio_unitario, estado FROM linea_pedido WHERE linea_id = %s FOR UPDATE", (linea_id,))
+    q, s, k, precio, estado = cur.fetchone()
+    cur.execute("UPDATE linea_pedido SET k = %s, estado = %s WHERE linea_id = %s",
+                (k + cantidad, estado_tras_cancelar(q, s, k + cantidad, estado), linea_id))
+    return producto_id, (Decimal(precio) * cantidad).quantize(Decimal("0.01"))
+
+
+def cancelar_cantidad_por_faltante(conn, resolucion_id: UUID, linea_id: UUID, usuario_id: UUID,
+                                   clave_operacion: UUID) -> UUID | None:
+    from app.modulos.pagos import solicitar_reembolso
+
+    with conn.cursor() as cur:
+        pendiente = _asignacion_pendiente(cur, resolucion_id, linea_id)
+        if pendiente is None:
             return None
-
-        cur.execute(
-            """
-            SELECT reserva_id, cliente_id, darkstore_id, estado, total_vigente, intento_aplicado_id
-            FROM pedido
-            WHERE pedido_id = %s
-            FOR UPDATE
-            """,
-            (pedido_id,),
-        )
-        reserva_id, cliente_id, darkstore_id, estado, total_vigente, intento_id = cur.fetchone()
-
-        cur.execute(
-            "SELECT 1 FROM cancelacion_linea WHERE resolucion_id = %s AND linea_id = %s",
-            (resolucion_id, linea_id),
-        )
-        if cur.fetchone() is not None:
-            return None
-        if estado != "CONFIRMADO":
-            raise ErrorDeNegocio(
-                409,
-                "ESTADO_INCOMPATIBLE",
-                f"El pedido está en estado {estado} y no admite cancelación por faltante.",
-            )
-
-        cur.execute(
-            "SELECT producto_id FROM linea_pedido WHERE linea_id = %s",
-            (linea_id,),
-        )
-        producto_id = cur.fetchone()[0]
-        _bloquear_inventario(cur, darkstore_id, [producto_id])
-
-        cur.execute(
-            "SELECT q, s, k, precio_unitario, estado FROM linea_pedido WHERE linea_id = %s FOR UPDATE",
-            (linea_id,),
-        )
-        q, s, k, precio_unitario, estado_linea = cur.fetchone()
-        if cantidad > q - s - k:
-            raise ErrorDeNegocio(
-                409,
-                "ESTADO_INCOMPATIBLE",
-                "La línea no tiene suficientes unidades pendientes para cancelar.",
-            )
-
-        nuevo_k = k + cantidad
-        if s + nuevo_k == q:
-            nuevo_estado_linea = "CANCELADA" if s == 0 else "PARCIAL"
-        else:
-            nuevo_estado_linea = estado_linea
-        cur.execute(
-            "UPDATE linea_pedido SET k = %s, estado = %s WHERE linea_id = %s",
-            (nuevo_k, nuevo_estado_linea, linea_id),
-        )
-
-        monto = (Decimal(precio_unitario) * cantidad).quantize(Decimal("0.01"))
+        cantidad, pedido_id, (reserva_id, cliente_id, darkstore_id, _, intento_id) = pendiente
+        producto_id, monto = _restar_de_la_linea(cur, linea_id, darkstore_id, cantidad)
         cancelacion_id = uuid4()
-        reembolso_a_enviar = solicitar_reembolso(
-            conn,
-            intento_id,
-            monto,
-            "CANCELACION_POR_FALTANTE",
-            cancelacion_id=cancelacion_id,
-        )
+        por_enviar = solicitar_reembolso(conn, intento_id, monto, "CANCELACION_POR_FALTANTE", cancelacion_id=cancelacion_id)
         cur.execute(
-            "SELECT reembolso_id FROM reembolso WHERE cancelacion_id = %s",
-            (cancelacion_id,),
+            "INSERT INTO cancelacion_linea (cancelacion_id, linea_id, pedido_id, cantidad, causa, resolucion_id, usuario_id, reembolso_id) "
+            "SELECT %s, %s, %s, %s, 'FALTANTE_VALIDADO', %s, %s, reembolso_id FROM reembolso WHERE cancelacion_id = %s",
+            (cancelacion_id, linea_id, pedido_id, cantidad, resolucion_id, usuario_id, cancelacion_id),
         )
-        reembolso_id = cur.fetchone()[0]
-
+        _registrar_movimiento_cancelacion(cur, darkstore_id, producto_id, cantidad, "Cancelación por faltante validado",
+                                          clave_operacion, reserva_id, linea_id, usuario_id=usuario_id, resolucion_id=resolucion_id)
         cur.execute(
-            """
-            INSERT INTO cancelacion_linea (
-                cancelacion_id, linea_id, pedido_id, cantidad, causa,
-                resolucion_id, usuario_id, reembolso_id
-            )
-            VALUES (%s, %s, %s, %s, 'FALTANTE_VALIDADO', %s, %s, %s)
-            """,
-            (cancelacion_id, linea_id, pedido_id, cantidad, resolucion_id, usuario_id, reembolso_id),
+            "UPDATE pedido SET total_vigente = total_vigente - %s, estado = CASE WHEN "
+            "(SELECT bool_and(estado = 'CANCELADA') FROM linea_pedido WHERE pedido_id = %s) THEN 'CANCELADO' ELSE estado END "
+            "WHERE pedido_id = %s",
+            (monto, pedido_id, pedido_id),
         )
-
-        _registrar_movimiento_cancelacion(
-            cur,
-            darkstore_id,
-            producto_id,
-            cantidad,
-            "Cancelación por faltante validado",
-            clave_operacion,
-            reserva_id,
-            linea_id,
-            usuario_id=usuario_id,
-            resolucion_id=resolucion_id,
-        )
-
-        cur.execute(
-            "SELECT bool_and(estado = 'CANCELADA') FROM linea_pedido WHERE pedido_id = %s",
-            (pedido_id,),
-        )
-        todas_canceladas = cur.fetchone()[0]
-        cur.execute(
-            """
-            UPDATE pedido
-            SET total_vigente = total_vigente - %s,
-                estado = CASE WHEN %s THEN 'CANCELADO' ELSE estado END
-            WHERE pedido_id = %s
-            """,
-            (monto, todas_canceladas, pedido_id),
-        )
-
-        registrar_aviso(
-            conn,
-            tipo="CANCELACION_PARCIAL",
-            origen_tipo="CANCELACION_LINEA",
-            origen_id=cancelacion_id,
-            cliente_id=cliente_id,
-            pedido_id=pedido_id,
-        )
-
-    return reembolso_a_enviar
+        registrar_aviso(conn, tipo="CANCELACION_PARCIAL", origen_tipo="CANCELACION_LINEA", origen_id=cancelacion_id,
+                        cliente_id=cliente_id, pedido_id=pedido_id)
+    return por_enviar
 
 
 @router.post("/v1/pedidos/{pedido_id}/cancelacion")

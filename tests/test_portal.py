@@ -61,8 +61,30 @@ def test_cancelacion_reembolso_y_aviso_visibles():
     assert p['avisos'][0]['tipo']=='PEDIDO_CANCELADO'
 
 
-def test_altas_y_personal_solo_en_demo(monkeypatch):
-    assert client.post('/v1/portal/clientes').status_code==201
-    monkeypatch.delenv('EXPRESSYA_DEMO')
-    assert client.post('/v1/portal/clientes').status_code==404
-    assert client.get('/v1/portal/personal').status_code==404
+def test_ni_en_demo_hay_altas_anonimas_ni_selector_de_personal():
+    assert client.post('/v1/portal/clientes').status_code in (404, 405)
+    assert client.get('/v1/portal/personal').status_code in (404, 405)
+
+
+def test_pendientes_de_la_tienda_muestran_conteos_danos_e_inspecciones():
+    from escenarios_faltantes import contar, nuevo_usuario
+    from escenarios_danos import danar, inspeccionar
+
+    tienda, (producto,) = tienda_con_productos(1, unidades=10)
+    picker = nuevo_usuario(tienda, 'PICKER')
+    personal = nuevo_usuario(tienda, 'PERSONAL_TIENDA')
+    inspector = nuevo_usuario(tienda, 'INSPECTOR')
+    assert contar(tienda, producto, picker, 9).status_code == 201
+    dano = danar(tienda, producto, personal, 2).json()['movimiento_id']
+    inspeccionar(dano, inspector, 1, 'APTA')
+
+    r = client.get(f'/v1/portal/pendientes/{tienda}', headers={'Usuario-Id': str(picker)})
+
+    assert r.status_code == 200, r.text
+    p = r.json()
+    assert [(c['cantidad_contada'], c['e_al_corte']) for c in p['conteos']] == [(9, 10)]
+    assert [(d['origen'], d['estado']) for d in p['discrepancias']] == [('CONTEO', 'EN_VALIDACION')]
+    assert [(d['cantidad'], d['por_inspeccionar']) for d in p['danos']] == [(2, 1)]
+    assert [(i['resultado'], i['resuelta']) for i in p['inspecciones']] == [('APTA', False)]
+    assert p['avisos'] == []
+    assert client.get(f'/v1/portal/pendientes/{tienda}', headers={'Usuario-Id': str(uuid4())}).status_code == 403

@@ -1,12 +1,10 @@
-"""Consultas de la interfaz. Identidad temporal igual que los contratos existentes.
-El alta de clientes y selector de personal son exclusivos del entorno local de demo.
-"""
-import os
+"""Consultas de la interfaz. La identidad llega de la sesión (app/seguridad.py)."""
 from uuid import UUID
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Request
 from psycopg.rows import dict_row
 from app.db import pool
 from app.errores import ErrorDeNegocio
+from app.seguridad import es_administracion
 
 router = APIRouter(prefix='/v1/portal', tags=['Portal (consultas de interfaz)'])
 
@@ -17,12 +15,9 @@ def filas(conn, sql, args=()):
         return cur.fetchall()
 
 
-def exigir_demo():
-    if os.getenv('EXPRESSYA_DEMO') != '1':
-        raise ErrorDeNegocio(404, 'NO_ENCONTRADO', 'Entorno de demostración desactivado.')
-
-
-def exigir_rol(conn, usuario_id, tienda):
+def exigir_rol(conn, request, usuario_id, tienda):
+    if es_administracion(request):
+        return
     if not usuario_id or not conn.execute('SELECT 1 FROM asignacion_rol WHERE usuario_id=%s AND darkstore_id=%s', (usuario_id, tienda)).fetchone():
         raise ErrorDeNegocio(403, 'SIN_PERMISO', 'Se requiere un usuario asignado a esta tienda.')
 
@@ -42,24 +37,10 @@ def catalogo(tienda: UUID):
             WHERE v.darkstore_id=%s ORDER BY p.nombre''', (tienda,))
 
 
-@router.post('/clientes', status_code=201)
-def nuevo_cliente():
-    exigir_demo()
-    with pool.connection() as conn:
-        return {'cliente_id': conn.execute('INSERT INTO cliente DEFAULT VALUES RETURNING cliente_id').fetchone()[0]}
-
-
-@router.get('/personal')
-def personal():
-    exigir_demo()
-    with pool.connection() as conn:
-        return filas(conn, '''SELECT u.usuario_id,u.nombre,a.darkstore_id,a.rol
-            FROM usuario_operativo u JOIN asignacion_rol a USING(usuario_id)
-            ORDER BY u.nombre''')
-
-
 @router.get('/pedidos')
-def pedidos(cliente_id: UUID = Header(alias='Cliente-Id')):
+def pedidos(cliente_id: UUID | None = Header(default=None, alias='Cliente-Id')):
+    if cliente_id is None:
+        raise ErrorDeNegocio(401, 'NO_AUTENTICADO', 'Inicia sesión para ver tus pedidos.')
     with pool.connection() as conn:
         return filas(conn, '''SELECT p.pedido_id,p.estado,p.total_vigente::text AS total_vigente,
             p.fecha_creacion,d.nombre AS tienda,r.estado AS estado_reserva
@@ -67,24 +48,54 @@ def pedidos(cliente_id: UUID = Header(alias='Cliente-Id')):
             WHERE p.cliente_id=%s ORDER BY p.fecha_creacion DESC LIMIT 100''', (cliente_id,))
 
 
-@router.get('/operacion/{tienda}')
-def operacion(tienda: UUID, usuario_id: UUID = Header(alias='Usuario-Id')):
-    with pool.connection() as conn:
-        exigir_rol(conn, usuario_id, tienda)
-        return {
-            'inventario': filas(conn, '''SELECT v.*,p.nombre,h.e_historial,h.n_historial
+CONSULTAS_OPERACION = {
+    'inventario': '''SELECT v.*,p.nombre,h.e_historial,h.n_historial
                 FROM v_saldos_inventario v JOIN producto p USING(producto_id)
                 JOIN v_reconstruccion_saldos h USING(darkstore_id,producto_id)
-                WHERE v.darkstore_id=%s ORDER BY p.nombre''', (tienda,)),
-            'pedidos': filas(conn, '''SELECT p.pedido_id,p.estado,p.total_vigente::text AS total_vigente,p.fecha_creacion
-                FROM pedido p WHERE darkstore_id=%s ORDER BY fecha_creacion DESC LIMIT 100''', (tienda,)),
-            'discrepancias': filas(conn, '''SELECT d.*,p.nombre FROM discrepancia d JOIN producto p USING(producto_id)
-                WHERE darkstore_id=%s ORDER BY fecha_deteccion DESC LIMIT 100''', (tienda,))
-        }
+                WHERE v.darkstore_id=%s ORDER BY p.nombre''',
+    'pedidos': '''SELECT p.pedido_id,p.estado,p.total_vigente::text AS total_vigente,p.fecha_creacion
+                FROM pedido p WHERE darkstore_id=%s ORDER BY fecha_creacion DESC LIMIT 100''',
+}
+
+CONSULTAS_PENDIENTES = {
+    'conteos': """SELECT c.conteo_id,c.producto_id,p.nombre,c.cantidad_contada,c.e_al_corte,c.fecha_registro
+                FROM conteo_fisico c JOIN producto p USING(producto_id)
+                WHERE c.darkstore_id=%s ORDER BY c.fecha_registro DESC LIMIT 50""",
+    'discrepancias': """SELECT d.discrepancia_id,d.producto_id,p.nombre,d.tipo,d.origen,d.estado,d.fecha_deteccion
+                FROM discrepancia d JOIN producto p USING(producto_id)
+                WHERE d.darkstore_id=%s ORDER BY d.estado DESC,d.fecha_deteccion DESC LIMIT 50""",
+    'danos': """SELECT m.movimiento_id,m.producto_id,p.nombre,s.cantidad,m.motivo,m.fecha,
+                s.cantidad-COALESCE((SELECT SUM(i.cantidad) FROM inspeccion_dano i WHERE i.movimiento_dano_id=m.movimiento_id),0)::int AS por_inspeccionar
+                FROM movimiento_inventario m JOIN movimiento_saldo s ON s.movimiento_id=m.movimiento_id AND s.saldo='N'
+                JOIN producto p ON p.producto_id=m.producto_id
+                WHERE m.darkstore_id=%s AND m.tipo='DANO' ORDER BY m.fecha DESC LIMIT 50""",
+    'inspecciones': """SELECT i.inspeccion_id,i.producto_id,p.nombre,i.cantidad,i.resultado,i.fecha,
+                i.inspeccionado_por,EXISTS(SELECT 1 FROM movimiento_inventario m WHERE m.referencia_inspeccion_id=i.inspeccion_id) AS resuelta
+                FROM inspeccion_dano i JOIN producto p USING(producto_id)
+                WHERE i.darkstore_id=%s ORDER BY i.fecha DESC LIMIT 50""",
+    'avisos': """SELECT a.tipo,a.pedido_id,a.fecha,a.entregado_en FROM aviso a JOIN pedido pe USING(pedido_id)
+                WHERE a.destinatario_tipo='RESPONSABLE' AND pe.darkstore_id=%s ORDER BY a.fecha DESC LIMIT 50""",
+}
+
+
+def consultar_tienda(request, usuario_id, tienda, consultas: dict) -> dict:
+    with pool.connection() as conn:
+        exigir_rol(conn, request, usuario_id, tienda)
+        return {nombre: filas(conn, sql, (tienda,)) for nombre, sql in consultas.items()}
+
+
+@router.get('/operacion/{tienda}')
+def operacion(tienda: UUID, request: Request, usuario_id: UUID | None = Header(default=None, alias='Usuario-Id')):
+    return consultar_tienda(request, usuario_id, tienda, CONSULTAS_OPERACION)
+
+
+@router.get('/pendientes/{tienda}')
+def pendientes(tienda: UUID, request: Request, usuario_id: UUID | None = Header(default=None, alias='Usuario-Id')):
+    return consultar_tienda(request, usuario_id, tienda, CONSULTAS_PENDIENTES)
 
 
 @router.get('/pedido/{pedido}')
-def detalle(pedido: UUID, cliente_id: UUID | None = Header(default=None, alias='Cliente-Id'), usuario_id: UUID | None = Header(default=None, alias='Usuario-Id')):
+def detalle(pedido: UUID, request: Request, cliente_id: UUID | None = Header(default=None, alias='Cliente-Id'), usuario_id: UUID | None = Header(default=None, alias='Usuario-Id')):
     with pool.connection() as conn:
         datos = filas(conn, '''SELECT p.*,p.total_vigente::text AS total_vigente,d.nombre AS tienda,
             r.estado AS estado_reserva,r.t_vence,clock_timestamp() AS hora_servidor
@@ -93,8 +104,8 @@ def detalle(pedido: UUID, cliente_id: UUID | None = Header(default=None, alias='
         if not datos:
             raise ErrorDeNegocio(404,'NO_ENCONTRADO','Pedido no encontrado.')
         p = datos[0]
-        if usuario_id:
-            exigir_rol(conn, usuario_id, p['darkstore_id'])
+        if usuario_id or es_administracion(request):
+            exigir_rol(conn, request, usuario_id, p['darkstore_id'])
         elif cliente_id != p['cliente_id']:
             raise ErrorDeNegocio(404,'NO_ENCONTRADO','Pedido no encontrado.')
         p['lineas'] = filas(conn, '''SELECT lr.producto_id,pr.nombre,lr.cantidad,lr.precio_unitario::text AS precio,
@@ -112,9 +123,9 @@ def detalle(pedido: UUID, cliente_id: UUID | None = Header(default=None, alias='
 
 
 @router.get('/movimientos/{tienda}/{producto}')
-def movimientos(tienda: UUID, producto: UUID, usuario_id: UUID = Header(alias='Usuario-Id')):
+def movimientos(tienda: UUID, producto: UUID, request: Request, usuario_id: UUID | None = Header(default=None, alias='Usuario-Id')):
     with pool.connection() as conn:
-        exigir_rol(conn,usuario_id,tienda)
+        exigir_rol(conn, request, usuario_id, tienda)
         return filas(conn, '''SELECT m.movimiento_id,m.fecha,m.tipo,m.motivo,m.usuario_id,m.autorizado_por,
             m.referencia_linea_id,m.referencia_reserva_id,ms.saldo,ms.cantidad
             FROM movimiento_inventario m LEFT JOIN movimiento_saldo ms USING(movimiento_id)

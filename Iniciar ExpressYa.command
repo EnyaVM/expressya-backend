@@ -16,6 +16,7 @@ if command -v docker >/dev/null && docker container inspect expressya-db >/dev/n
   docker start expressya-db >/dev/null
 fi
 .venv/bin/python scripts/preparar_demo.py
+.venv/bin/python -m scripts.crear_cuentas_demo
 if curl -fsS http://127.0.0.1:8001/v1/salud >/dev/null 2>&1; then
   echo 'ExpressYa ya está abierto en http://127.0.0.1:8001'
   exit 0

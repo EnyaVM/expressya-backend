@@ -224,3 +224,11 @@ def test_cuerpo_invalido_responde_400_solicitud_invalida():
 
     assert respuesta.status_code == 400
     assert respuesta.json()["codigo"] == "SOLICITUD_INVALIDA"
+
+
+def test_estado_de_la_linea_tras_cancelar():
+    from app.modulos.cancelaciones import estado_tras_cancelar
+
+    assert estado_tras_cancelar(q=3, s=0, k=3, estado="NO_SURTIBLE") == "CANCELADA"
+    assert estado_tras_cancelar(q=3, s=1, k=2, estado="NO_SURTIBLE") == "PARCIAL"
+    assert estado_tras_cancelar(q=3, s=0, k=2, estado="NO_SURTIBLE") == "NO_SURTIBLE"
