@@ -37,15 +37,17 @@ def existe(conn, consulta):
     return conn.execute(consulta).fetchone() is not None
 
 
+SONDAS = {
+    '03_clave_intento_pago.sql': "SELECT 1 FROM information_schema.columns WHERE table_schema='expressya' "
+                                 "AND table_name='intento_pago' AND column_name='clave_operacion'",
+    '04_cuentas_y_sesiones.sql': "SELECT 1 WHERE to_regclass('expressya.cuenta') IS NOT NULL",
+    '93_datos_c3.sql': "SELECT 1 FROM expressya.usuario_operativo "
+                       "WHERE usuario_id = '88888888-8888-8888-8888-888888888888'",
+}
+
+
 def legado_detectado(conn):
-    nombres = list(LEGADO)
-    if existe(conn, "SELECT 1 FROM information_schema.columns WHERE table_schema='expressya' "
-                    "AND table_name='intento_pago' AND column_name='clave_operacion'"):
-        nombres.append('03_clave_intento_pago.sql')
-    if existe(conn, "SELECT 1 FROM expressya.usuario_operativo "
-                    "WHERE usuario_id = '88888888-8888-8888-8888-888888888888'"):
-        nombres.append('93_datos_c3.sql')
-    return nombres
+    return list(LEGADO) + [nombre for nombre, sonda in SONDAS.items() if existe(conn, sonda)]
 
 
 def cargados(conn):

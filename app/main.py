@@ -9,7 +9,8 @@ from app.db import pool
 from fastapi.exceptions import RequestValidationError
 
 from app.errores import ErrorDeNegocio, responder_error_de_negocio, responder_validacion
-from app.modulos import portal
+from app.modulos import cuentas, portal
+from app.seguridad import Autenticacion
 from app.modulos import cancelaciones, faltantes, inventario, pagos, pasarela_simulada, pedidos, reservas
 
 SEGUNDOS_ENTRE_REVISIONES = 5
@@ -58,6 +59,8 @@ async def ciclo_de_vida(app: FastAPI):
 app = FastAPI(title="ExpressYa", lifespan=ciclo_de_vida)
 app.add_exception_handler(ErrorDeNegocio, responder_error_de_negocio)
 app.add_exception_handler(RequestValidationError, responder_validacion)
+app.add_middleware(Autenticacion)
+app.include_router(cuentas.router)
 app.include_router(portal.router)
 app.include_router(inventario.router)
 app.include_router(reservas.router)

@@ -52,3 +52,28 @@ def test_una_demo_creada_antes_del_registro_no_repite_lo_ya_cargado():
     with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
         conn.execute("DROP TABLE expressya.archivo_cargado")
         assert actualizar_base(conn) == []
+
+
+def test_las_cuentas_de_demo_se_crean_una_vez_y_entran_con_su_clave(tmp_path, monkeypatch):
+    from uuid import uuid4
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from scripts import crear_cuentas_demo
+
+    picker = f"picker.{uuid4().hex[:8]}"
+    monkeypatch.setattr(crear_cuentas_demo, "ARCHIVO", tmp_path / "cuentas.txt")
+    monkeypatch.setattr(crear_cuentas_demo, "CUENTAS", [
+        (f"admin.{uuid4().hex[:8]}", "Admin", "ADMINISTRADOR", []),
+        (picker, "Picker", "INTERNO", [(crear_cuentas_demo.SUR, "PICKER")]),
+    ])
+    crear_cuentas_demo.crear_faltantes()
+    assert crear_cuentas_demo.crear_faltantes() == []
+    claves = dict(linea.split()[:2] for linea in (tmp_path / "cuentas.txt").read_text().splitlines())
+
+    r = TestClient(app).post("/v1/auth/login", json={"usuario": picker, "clave": claves[picker], "portal": "interno"})
+
+    assert len(claves) == 2
+    assert r.status_code == 200
+    assert [(a["darkstore_id"], a["rol"]) for a in r.json()["asignaciones"]] == [(crear_cuentas_demo.SUR, "PICKER")]

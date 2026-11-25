@@ -61,8 +61,6 @@ def test_cancelacion_reembolso_y_aviso_visibles():
     assert p['avisos'][0]['tipo']=='PEDIDO_CANCELADO'
 
 
-def test_altas_y_personal_solo_en_demo(monkeypatch):
-    assert client.post('/v1/portal/clientes').status_code==201
-    monkeypatch.delenv('EXPRESSYA_DEMO')
-    assert client.post('/v1/portal/clientes').status_code==404
-    assert client.get('/v1/portal/personal').status_code==404
+def test_ni_en_demo_hay_altas_anonimas_ni_selector_de_personal():
+    assert client.post('/v1/portal/clientes').status_code in (404, 405)
+    assert client.get('/v1/portal/personal').status_code in (404, 405)
