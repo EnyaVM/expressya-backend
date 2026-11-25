@@ -2,8 +2,8 @@
 
 Generada por `python -m scripts.evidencia_final` sobre una base reconstruida desde `db/*.sql`.
 
-- Commit: `6fd1512`
-- Fecha: 2026-11-25T07:46:44
+- Commit: `a82bab7`
+- Fecha: 2026-11-25T07:47:09
 - Python 3.12.3, PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1), FastAPI 0.110.0, psycopg 3.1.18, pytest 8.1.1
 - Suite completa: 256 de 256 casos pasan (0 fallan)
 
@@ -26,6 +26,6 @@ Generada por `python -m scripts.evidencia_final` sobre una base reconstruida des
 | C3-DANO | Daño, inspección y reincorporación con dos personas distintas | CL-14, CL-15, D-09 | `danos.reportar_dano, danos.resolver_inspeccion` (CL-14, CL-15) | `test_cl14_cl15_danos.py::test_un_dano_que_deja_deficit_bloquea_y_abre_discrepancia_d05`<br>`test_cl14_cl15_danos.py::test_at07_reincorporar_lo_apto_exige_una_segunda_persona`<br>`test_cl14_cl15_danos.py::test_quien_inspecciona_no_puede_autorizar_su_propia_inspeccion` | Automatizada | PASA |
 | C4-E2E | Flujo completo: checkout, pago, faltante, cancelación parcial y reembolso | C1 a C3 integrados | `módulos M01 a M06` (CL-02 a CL-16) | `test_e2e_c4.py::test_flujo_completo_checkout_pago_faltante_cancelacion_y_reembolso` | Automatizada | PASA |
 | SEG-01 | Identidad por sesión: nadie opera como otro cliente o empleado | RNF-06 (RBAC), securitySchemes | `seguridad.Autenticacion` (Todos) | `test_cuentas.py::test_sin_sesion_un_id_de_cliente_inventado_no_sirve`<br>`test_cuentas.py::test_con_sesion_no_se_puede_suplantar_a_otro_cliente`<br>`test_cuentas.py::test_administracion_consulta_todo_pero_no_opera` | Automatizada | PASA |
-| SEG-02 | Perfiles por tienda y administración de cuentas auditada | asignacion_rol, auditoria_cuenta | `cuentas.dar_de_alta, cuentas.cambiar_acceso` (Cuentas) | `test_cuentas.py::test_administracion_da_de_alta_personal_con_perfiles_y_queda_auditado`<br>`test_cuentas.py::test_desactivar_una_cuenta_corta_su_sesion_abierta` | Automatizada | PASA |
+| SEG-02 | Perfiles validados en la tienda del pedido, sesiones por portal y cuentas auditadas | asignacion_rol, auditoria_cuenta | `cuentas.dar_de_alta, cuentas.cambiar_acceso` (Cuentas) | `test_cuentas.py::test_administracion_da_de_alta_personal_con_perfiles_y_queda_auditado`<br>`test_cuentas.py::test_desactivar_una_cuenta_corta_su_sesion_abierta`<br>`test_permisos_por_tienda.py::test_un_responsable_de_otra_tienda_no_aprueba_el_pago`<br>`test_cuentas.py::test_tienda_e_interno_conservan_su_propia_sesion_en_el_mismo_navegador` | Automatizada | PASA |
 
 Además de lo automatizado, el recorrido en navegador (sección 9 del README) se hace a mano en la demostración.
