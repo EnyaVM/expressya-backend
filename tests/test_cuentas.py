@@ -202,3 +202,14 @@ def test_usuario_repetido_da_409():
 def test_clave_corta_se_rechaza():
     respuesta = TestClient(app).post("/v1/auth/registro", json={"usuario": nombre_usuario("x"), "nombre": "X", "clave": "corta"})
     assert respuesta.status_code == 400
+
+
+def test_solo_administracion_cambia_la_pasarela_de_prueba():
+    cliente = sesion(cuenta("CLIENTE"), "cliente")
+    admin = sesion(cuenta("ADMINISTRADOR"), "interno")
+    assert cliente.post("/simulador/modo", json={"cobro": "RECHAZAR"}).status_code == 403
+    try:
+        assert admin.post("/simulador/modo", json={"cobro": "RECHAZAR"}).json()["cobro"] == "RECHAZAR"
+        assert admin.post("/simulador/modo", json={"cobro": "OTRO"}).status_code == 400
+    finally:
+        admin.post("/simulador/modo", json={"cobro": "APROBAR", "reembolso": "CONFIRMAR"})

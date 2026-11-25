@@ -1,10 +1,11 @@
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from app.errores import ErrorDeNegocio
+from app.seguridad import encabezados_de_prueba, es_administracion
 
 router = APIRouter(prefix="/simulador", tags=["Simulador Pasarela (No CL)"])
 
@@ -32,64 +33,33 @@ def _siguiente_referencia() -> str:
     return f"PSP-{_contador_referencia:06d}"
 
 
-def cobrar(intento_id: UUID, monto: str) -> tuple[str, str] | None:
-    """
-    Simula un cobro síncrono contra la pasarela externa.
-    Devuelve ('APROBADO'|'RECHAZADO', referencia_externa) o None si simula timeout (30s).
-    """
-    modo = _estado_simulador["cobro"]
+def responder(modo: str, exito: str, fallo: str) -> tuple[str, str] | None:
     if modo == "NO_RESPONDER":
         return None
-    referencia = _siguiente_referencia()
-    if modo == "APROBAR":
-        return ("APROBADO", referencia)
-    return ("RECHAZADO", referencia)
+    return (exito if modo in ("APROBAR", "CONFIRMAR") else fallo), _siguiente_referencia()
+
+
+def cobrar(intento_id: UUID, monto: str) -> tuple[str, str] | None:
+    return responder(_estado_simulador["cobro"], "APROBADO", "RECHAZADO")
 
 
 def reembolsar(reembolso_id: UUID, monto: str) -> tuple[str, str] | None:
-    """
-    Simula un reembolso contra la pasarela externa.
-    Devuelve ('CONFIRMADO'|'FALLIDO', referencia_externa) o None si simula timeout.
-    """
-    modo = _estado_simulador["reembolso"]
-    if modo == "NO_RESPONDER":
-        return None
-    referencia = _siguiente_referencia()
-    if modo == "CONFIRMAR":
-        return ("CONFIRMADO", referencia)
-    return ("FALLIDO", referencia)
+    return responder(_estado_simulador["reembolso"], "CONFIRMADO", "FALLIDO")
 
 
 class ConfiguracionModoSolicitud(BaseModel):
-    cobro: str | None = None
-    reembolso: str | None = None
+    cobro: ModoCobro | None = None
+    reembolso: ModoReembolso | None = None
 
 
 @router.get("/modo")
 def obtener_modo() -> dict[str, str]:
-    """Consulta el modo actual configurado en la pasarela simulada."""
     return dict(_estado_simulador)
 
 
 @router.post("/modo")
-def configurar_modo(cuerpo: ConfiguracionModoSolicitud) -> dict[str, str]:
-    """Cambia dinámicamente el comportamiento de cobro y/o reembolso del simulador."""
-    if cuerpo.cobro is not None:
-        if cuerpo.cobro not in ("APROBAR", "RECHAZAR", "NO_RESPONDER"):
-            raise ErrorDeNegocio(
-                400,
-                "SOLICITUD_INVALIDA",
-                f"Modo de cobro inválido: {cuerpo.cobro}",
-            )
-        _estado_simulador["cobro"] = cuerpo.cobro
-
-    if cuerpo.reembolso is not None:
-        if cuerpo.reembolso not in ("CONFIRMAR", "FALLAR", "NO_RESPONDER"):
-            raise ErrorDeNegocio(
-                400,
-                "SOLICITUD_INVALIDA",
-                f"Modo de reembolso inválido: {cuerpo.reembolso}",
-            )
-        _estado_simulador["reembolso"] = cuerpo.reembolso
-
+def configurar_modo(cuerpo: ConfiguracionModoSolicitud, request: Request) -> dict[str, str]:
+    if not (encabezados_de_prueba() or es_administracion(request)):
+        raise ErrorDeNegocio(403, "SIN_PERMISO", "Solo administración configura la pasarela de prueba.")
+    _estado_simulador.update(cuerpo.model_dump(exclude_none=True))
     return dict(_estado_simulador)
